@@ -1,104 +1,14 @@
-__copyright__ = "Copyright (c) 2020 Jina AI Limited. All rights reserved."
-__license__ = "Apache-2.0"
-
 import logging
 import logging.handlers
 import os
 import platform
-import re
 import sys
 from typing import Optional
 
-from pkg_resources import resource_filename
-
 from . import formatter
+from .. import __uptime__, __resources_path__
 from ..enums import LogVerbosity
 from ..jaml import JAML
-
-
-class NTLogger:
-    """A compatible logger for Windows system, colors are all removed to keep compatible."""
-
-    def __init__(self, context: str, log_level: 'LogVerbosity' = LogVerbosity.INFO):
-        """
-        Create a compatible logger for Windows system, colors are all removed to keep compatible.
-
-        :param context: The name prefix of each log.
-        :param log_level: Level of log.
-        """
-        self.context = self._planify(context)
-        self.log_level = log_level
-
-    @staticmethod
-    def _planify(msg):
-        return re.sub(r'\u001b\[.*?[@-~]', '', msg)
-
-    def info(self, msg: str, **kwargs):
-        """
-        Log info-level message.
-
-        :param kwargs: Keyword arguments.
-        :param msg: Context of log.
-        """
-        if self.log_level <= LogVerbosity.INFO:
-            sys.stdout.write(f'{self.context}[I]:{self._planify(msg)}')
-
-    def critical(self, msg: str, **kwargs):
-        """
-        Log critical-level message.
-
-        :param kwargs: Keyword arguments.
-        :param msg: Context of log.
-        """
-        if self.log_level <= LogVerbosity.CRITICAL:
-            sys.stdout.write(f'{self.context}[C]:{self._planify(msg)}')
-
-    def debug(self, msg: str, **kwargs):
-        """
-        Log debug-level message.
-
-        :param kwargs: Keyword arguments.
-        :param msg: Content of log.
-        """
-        if self.log_level <= LogVerbosity.DEBUG:
-            sys.stdout.write(f'{self.context}[D]:{self._planify(msg)}')
-
-    def error(self, msg: str, **kwargs):
-        """
-        Log error-level message.
-
-        :param kwargs: Keyword arguments.
-        :param msg: Context of log.
-        """
-        if self.log_level <= LogVerbosity.ERROR:
-            sys.stdout.write(f'{self.context}[E]:{self._planify(msg)}')
-
-    def warning(self, msg: str, **kwargs):
-        """
-        Log warning-level message.
-
-        :param kwargs: Keyword arguments.
-        :param msg: Context of log.
-        """
-        if self.log_level <= LogVerbosity.WARNING:
-            sys.stdout.write(f'{self.context}[W]:{self._planify(msg)}')
-
-    def success(self, msg: str, **kwargs):
-        """
-        Log success-level message.
-
-        :param msg: Context of log.
-        :param kwargs: Keyword arguments.
-        """
-        if self.log_level <= LogVerbosity.SUCCESS:
-            sys.stdout.write(f'{self.context}[S]:{self._planify(msg)}')
-
-
-class PrintLogger(NTLogger):
-    """Print the message."""
-    @staticmethod
-    def _planify(msg):
-        return msg
 
 
 class SysLogHandlerWrapper(logging.handlers.SysLogHandler):
@@ -117,7 +27,6 @@ class SysLogHandlerWrapper(logging.handlers.SysLogHandler):
         'WARNING': 'warning',
         'ERROR': 'error',
         'CRITICAL': 'critical',
-        'SUCCESS': 'notice'
     }
 
 
@@ -130,27 +39,30 @@ class JinaLogger:
     :param identity: The id of the group the messages from this logger will belong, used by fluentd default
     configuration to group logs by pod.
     :param workspace_path: The workspace path where the log will be stored at (only apply to fluentd)
-    :returns: an executor object.
+    :return:: an executor object.
     """
+
     supported = {'FileHandler', 'StreamHandler', 'SysLogHandler', 'FluentHandler'}
 
-    def __init__(self,
-                 context: str,
-                 name: Optional[str] = None,
-                 log_config: Optional[str] = None,
-                 identity: Optional[str] = None,
-                 workspace_path: Optional[str] = None,
-                 quiet: bool = False,
-                 **kwargs):
-        from .. import __uptime__
+    def __init__(
+        self,
+        context: str,
+        name: Optional[str] = None,
+        log_config: Optional[str] = None,
+        identity: Optional[str] = None,
+        workspace_path: Optional[str] = None,
+        quiet: bool = False,
+        **kwargs,
+    ):
+
         if not log_config:
-            log_config = os.getenv('JINA_LOG_CONFIG',
-                                   resource_filename('jina', '/'.join(
-                                       ('resources', 'logging.default.yml'))))
+            log_config = os.getenv(
+                'JINA_LOG_CONFIG',
+                os.path.join(__resources_path__, 'logging.default.yml'),
+            )
 
         if quiet or os.getenv('JINA_LOG_CONFIG', None) == 'QUIET':
-            log_config = resource_filename('jina', '/'.join(
-                ('resources', 'logging.quiet.yml')))
+            log_config = os.path.join(__resources_path__, 'logging.quiet.yml')
 
         if not identity:
             identity = os.getenv('JINA_LOG_ID', None)
@@ -165,36 +77,31 @@ class JinaLogger:
         self.logger = logging.getLogger(context)
         self.logger.propagate = False
 
-        if workspace_path is None:
-            workspace_path = os.getenv('JINA_LOG_WORKSPACE', '/tmp/jina/')
-
-        context_vars = {'name': name,
-                        'uptime': __uptime__,
-                        'context': context,
-                        'workspace_path': workspace_path}
+        context_vars = {
+            'name': name,
+            'uptime': __uptime__,
+            'context': context,
+            'workspace_path': workspace_path
+            or os.getenv('JINA_LOG_WORKSPACE', '/tmp/jina/'),
+        }
         if identity:
             context_vars['log_id'] = identity
 
         self.add_handlers(log_config, **context_vars)
-
-        # note logger.success isn't default there
-        success_level = LogVerbosity.SUCCESS.value  # between WARNING and INFO
-        logging.addLevelName(success_level, 'SUCCESS')
-        setattr(self.logger, 'success', lambda message: self.logger.log(success_level, message))
-
-        self.info = self.logger.info
-        self.critical = self.logger.critical
+        self.success = lambda *x: self.logger.log(LogVerbosity.SUCCESS, *x)
         self.debug = self.logger.debug
-        self.error = self.logger.error
         self.warning = self.logger.warning
-        self.success = self.logger.success
+        self.critical = self.logger.critical
+        self.error = self.logger.error
+        self.info = self.logger.info
+        self.debug_enabled = self.logger.isEnabledFor(logging.DEBUG)
 
     @property
     def handlers(self):
         """
         Get the handlers of the logger.
 
-        :returns: Handlers of logger.
+        :return:: Handlers of logger.
         """
         return self.logger.handlers
 
@@ -209,7 +116,7 @@ class JinaLogger:
         for handler in self.logger.handlers:
             handler.close()
 
-    def add_handlers(self, config_path: str = None, **kwargs):
+    def add_handlers(self, config_path: Optional[str] = None, **kwargs):
         """
         Add handlers from config file.
 
@@ -223,10 +130,12 @@ class JinaLogger:
 
         for h in config['handlers']:
             cfg = config['configs'].get(h, None)
-            fmt = getattr(formatter, cfg.get('formatter', 'PlainFormatter'))
+            fmt = getattr(formatter, cfg.get('formatter', 'Formatter'))
 
             if h not in self.supported or not cfg:
-                raise ValueError(f'can not find configs for {h}, maybe it is not supported')
+                raise ValueError(
+                    f'can not find configs for {h}, maybe it is not supported'
+                )
 
             handler = None
             if h == 'StreamHandler':
@@ -251,17 +160,23 @@ class JinaLogger:
                     handler = None
                     pass
             elif h == 'FileHandler':
-                handler = logging.FileHandler(cfg['output'].format_map(kwargs), delay=True)
+                handler = logging.FileHandler(
+                    cfg['output'].format_map(kwargs), delay=True
+                )
                 handler.setFormatter(fmt(cfg['format'].format_map(kwargs)))
             elif h == 'FluentHandler':
                 from ..importer import ImportExtensions
+
                 with ImportExtensions(required=False, verbose=False):
                     from fluent import asynchandler as fluentasynchandler
                     from fluent.handler import FluentRecordFormatter
 
-                    handler = fluentasynchandler.FluentHandler(cfg['tag'],
-                                                               host=cfg['host'],
-                                                               port=cfg['port'], queue_circular=True)
+                    handler = fluentasynchandler.FluentHandler(
+                        cfg['tag'],
+                        host=cfg['host'],
+                        port=cfg['port'],
+                        queue_circular=True,
+                    )
 
                     cfg['format'].update(kwargs)
                     fmt = FluentRecordFormatter(cfg['format'])

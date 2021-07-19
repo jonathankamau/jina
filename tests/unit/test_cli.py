@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 
 import pytest
@@ -29,19 +30,40 @@ def test_all_cli(cli):
 
 
 def test_parse_env_map():
-    a = set_pod_parser().parse_args(['--env', 'key1=value1',
-                                     '--env', 'key2=value2'])
+    a = set_pod_parser().parse_args(['--env', 'key1=value1', '--env', 'key2=value2'])
     assert a.env == {'key1': 'value1', 'key2': 'value2'}
 
     a = set_pod_parser().parse_args(['--env', 'key1=value1', 'key2=value2', 'key3=3'])
     assert a.env == {'key1': 'value1', 'key2': 'value2', 'key3': 3}
 
 
+def test_shards_parallel_synonym():
+    a = set_pod_parser().parse_args(['--shards', '2'])
+    assert a.parallel == 2
+    with pytest.raises(AttributeError):
+        a.shards
+
+    a = set_pod_parser().parse_args(['--parallel', '2'])
+    assert a.parallel == 2
+    with pytest.raises(AttributeError):
+        a.shards
+
+    a = set_pod_parser().parse_args([])
+    assert a.parallel == 1
+    with pytest.raises(AttributeError):
+        a.shards
+
+
+@pytest.mark.slow
 def test_ping():
     a1 = set_pea_parser().parse_args([])
-    a2 = set_ping_parser().parse_args(['0.0.0.0', str(a1.port_ctrl), '--print-response'])
+    a2 = set_ping_parser().parse_args(
+        ['0.0.0.0', str(a1.port_ctrl), '--print-response']
+    )
 
-    a3 = set_ping_parser().parse_args(['0.0.0.1', str(a1.port_ctrl), '--timeout', '1000'])
+    a3 = set_ping_parser().parse_args(
+        ['0.0.0.1', str(a1.port_ctrl), '--timeout', '1000']
+    )
 
     with pytest.raises(SystemExit) as cm:
         with Pea(a1):
@@ -55,3 +77,14 @@ def test_ping():
             NetworkChecker(a3)
 
     assert cm.value.code == 1
+
+
+@pytest.mark.parametrize('project', ['fashion', 'chatbot', 'multimodal'])
+def test_fork(tmpdir, project):
+    subprocess.check_call(['jina', 'hello', 'fork', project, f'{tmpdir}/tmp'])
+
+    assert os.path.exists(f'{tmpdir}/tmp/app.py')
+    assert os.path.exists(f'{tmpdir}/tmp/my_executors.py')
+    if project == 'multimodal':
+        assert os.path.exists(f'{tmpdir}/tmp/flow-index.yml')
+        assert os.path.exists(f'{tmpdir}/tmp/flow-search.yml')

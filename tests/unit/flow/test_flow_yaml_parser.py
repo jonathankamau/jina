@@ -1,16 +1,16 @@
 import os
-
 from pathlib import Path
+
 import numpy as np
 import pytest
 
-from jina import Flow, AsyncFlow
+from jina import Executor
 from jina.excepts import BadFlowYAMLVersion
-from jina.executors.encoders import BaseEncoder
-from jina.flow import BaseFlow
+from jina import Flow
 from jina.jaml import JAML
 from jina.jaml.parsers import get_supported_versions
 from jina.parsers.flow import set_flow_parser
+from jina.types.document.generators import from_ndarray
 
 cur_dir = Path(__file__).parent
 
@@ -25,8 +25,6 @@ def test_load_flow_from_empty_yaml():
 
 def test_support_versions():
     assert get_supported_versions(Flow) == ['1', 'legacy']
-    assert get_supported_versions(AsyncFlow) == ['1', 'legacy']
-    assert get_supported_versions(BaseFlow) == ['1', 'legacy']
 
 
 def test_load_legacy_and_v1():
@@ -40,15 +38,22 @@ def test_load_legacy_and_v1():
         Flow.load_config('yaml/flow-v99-syntax.yml')
 
 
+@pytest.mark.slow
 def test_add_needs_inspect(tmpdir):
-    f1 = (Flow().add(name='pod0', needs='gateway').add(name='pod1', needs='gateway').inspect().needs(['pod0', 'pod1']))
+    f1 = (
+        Flow()
+        .add(name='pod0', needs='gateway')
+        .add(name='pod1', needs='gateway')
+        .inspect()
+        .needs(['pod0', 'pod1'])
+    )
     with f1:
-        f1.index_ndarray(np.random.random([5, 5]), on_done=print)
+        f1.index(from_ndarray(np.random.random([5, 5])), on_done=print)
 
     f2 = Flow.load_config('yaml/flow-v1.0-syntax.yml')
 
     with f2:
-        f2.index_ndarray(np.random.random([5, 5]), on_done=print)
+        f2.index(from_ndarray(np.random.random([5, 5])), on_done=print)
 
     assert f1 == f2
 
@@ -94,17 +99,30 @@ def test_flow_yaml_from_string():
         f2 = Flow.load_config(str_yaml)
         assert f1 == f2
 
-    f3 = Flow.load_config('!Flow\nversion: 1.0\npods: [{name: ppp0, uses: _merge}, name: aaa1]')
+    f3 = Flow.load_config(
+        '!Flow\nversion: 1.0\npods: [{name: ppp0, uses: _merge}, name: aaa1]'
+    )
     assert 'ppp0' in f3._pod_nodes.keys()
     assert 'aaa1' in f3._pod_nodes.keys()
     assert f3.num_pods == 2
 
 
 def test_flow_uses_from_dict():
-    class DummyEncoder(BaseEncoder):
+    class DummyEncoder(Executor):
         pass
 
-    d1 = {'jtype': 'DummyEncoder',
-          'metas': {'name': 'dummy1'}}
+    d1 = {'jtype': 'DummyEncoder', 'metas': {'name': 'dummy1'}}
     with Flow().add(uses=d1):
         pass
+
+
+def test_flow_yaml_override_with_protocol():
+    from jina.enums import GatewayProtocolType
+
+    path = os.path.join(cur_dir.parent, 'yaml/examples/faiss/flow-index.yml')
+    f1 = Flow.load_config(path)
+    assert f1.protocol == GatewayProtocolType.GRPC
+    f2 = Flow.load_config(path, override_with={'protocol': 'http'})
+    assert f2.protocol == GatewayProtocolType.HTTP
+    f3 = Flow.load_config(path, override_with={'protocol': 'websocket'})
+    assert f3.protocol == GatewayProtocolType.WEBSOCKET

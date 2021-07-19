@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+
 from jina import Document
 from jina.excepts import BadDocType
 from jina.types.document.multimodal import MultimodalDocument
@@ -73,20 +74,21 @@ def chunk_6(textual_embedding):
 
 @pytest.fixture(scope='function')
 def modality_content_mapping():
-    return {
-        'visual': 'content visual',
-        'textual': 'content textual'
-    }
+    return {'visual': 'content visual', 'textual': 'content textual'}
 
 
-@pytest.yield_fixture(scope='function')
+@pytest.fixture(scope='function')
 def multimodal_document(chunk_1, chunk_2):
     with MultimodalDocument() as md:
         md.tags['id'] = 1
         md.text = b'hello world'
         md.embedding = np.random.random([10 + np.random.randint(0, 1)])
-        md.chunks.add(chunk_1)  # attach a document with embedding and without content
-        md.chunks.add(chunk_2)  # attach a document with content and without embedding
+        md.chunks.append(
+            chunk_1
+        )  # attach a document with embedding and without content
+        md.chunks.append(
+            chunk_2
+        )  # attach a document with content and without embedding
         yield md
 
 
@@ -97,14 +99,18 @@ def test_modalities_property(multimodal_document):
     assert 'textual' in doc_modalities
 
 
-def test_modality_content_mapping_property(multimodal_document, visual_embedding, textual_embedding):
+def test_modality_content_mapping_property(
+    multimodal_document, visual_embedding, textual_embedding
+):
     mapping = multimodal_document.modality_content_map
     assert isinstance(mapping, dict)
     np.testing.assert_array_equal(mapping['textual'], textual_embedding)
     np.testing.assert_array_equal(mapping['visual'], visual_embedding)
 
 
-def test_extract_content_from_modality(multimodal_document, visual_embedding, textual_embedding):
+def test_extract_content_from_modality(
+    multimodal_document, visual_embedding, textual_embedding
+):
     textual = multimodal_document['textual']
     np.testing.assert_array_equal(textual, textual_embedding)
     visual = multimodal_document['visual']
@@ -121,7 +127,7 @@ def test_multimodal_document_fail_bad_doctype(visual_embedding):
 
 def test_multimodal_document_fail_length_mismatch(multimodal_document, chunk_3):
     # the multimodal document has 3 chunks, while 2 types of modalities.
-    multimodal_document.chunks.add(chunk_3)
+    multimodal_document.chunks.append(chunk_3)
     assert not multimodal_document.is_valid
 
 

@@ -1,6 +1,3 @@
-__copyright__ = "Copyright (c) 2020 Jina AI Limited. All rights reserved."
-__license__ = "Apache-2.0"
-
 import argparse
 import asyncio
 import os
@@ -13,13 +10,22 @@ import zmq.asyncio
 from zmq.eventloop.zmqstream import ZMQStream
 from zmq.ssh import tunnel_connection
 
-from ... import __default_host__, Request
+from ..networking import get_connect_host
+from ... import __default_host__
 from ...enums import SocketType
 from ...helper import colored, random_identity, get_readable_size, get_or_reuse_loop
 from ...importer import ImportExtensions
-from ...logging import default_logger, profile_logger, JinaLogger
+from ...logging.logger import JinaLogger
+from ...logging.predefined import default_logger
+from ...proto import jina_pb2
 from ...types.message import Message
 from ...types.message.common import ControlMessage
+from ...types.request import Request
+from ...types.routing.table import RoutingTable
+
+if False:
+    import multiprocessing
+    import threading
 
 
 class Zmqlet:
@@ -35,9 +41,18 @@ class Zmqlet:
         It requires :mod:`tornado` and :mod:`uvloop` to be installed.
     """
 
-    def __init__(self, args: 'argparse.Namespace', logger: 'JinaLogger' = None, ctrl_addr: str = None):
+    def __init__(
+        self,
+        args: 'argparse.Namespace',
+        logger: Optional['JinaLogger'] = None,
+        ctrl_addr: Optional[str] = None,
+    ):
         self.args = args
-        self.identity = random_identity()
+
+        if args.zmq_identity:
+            self.identity = args.zmq_identity
+        else:
+            self.identity = random_identity()
         self.name = args.name or self.__class__.__name__
         self.logger = logger
         self.send_recv_kwargs = vars(args)
@@ -45,28 +60,50 @@ class Zmqlet:
             self.ctrl_addr = ctrl_addr
             self.ctrl_with_ipc = self.ctrl_addr.startswith('ipc://')
         else:
-            self.ctrl_addr, self.ctrl_with_ipc = self.get_ctrl_address(args.host, args.port_ctrl, args.ctrl_with_ipc)
+            self.ctrl_addr, self.ctrl_with_ipc = self.get_ctrl_address(
+                args.host, args.port_ctrl, args.ctrl_with_ipc
+            )
 
         self.bytes_sent = 0
         self.bytes_recv = 0
         self.msg_recv = 0
         self.msg_sent = 0
         self.is_closed = False
+        self.is_polling_paused = False
+        self.in_sock_type = None
+        self.out_sock_type = None
+        self.ctrl_sock_type = None
         self.opened_socks = []  # this must be here for `close()`
-        self.ctx, self.in_sock, self.out_sock, self.ctrl_sock = self.init_sockets()
-        self.register_pollin()
+        (
+            self.ctx,
+            self.in_sock,
+            self.out_sock,
+            self.ctrl_sock,
+            self.in_connect_sock,
+        ) = self._init_sockets()
 
+        self.in_sock_type = self.in_sock.type
+        self.out_sock_type = self.out_sock.type
+        self.ctrl_sock_type = self.ctrl_sock.type
+
+        self._register_pollin()
         self.opened_socks.extend([self.in_sock, self.out_sock, self.ctrl_sock])
-        if self.in_sock_type == zmq.DEALER:
-            self.send_idle()
+        if self.in_connect_sock is not None:
+            self.opened_socks.append(self.in_connect_sock)
 
-    def register_pollin(self):
-        """Register :attr:`in_sock`, :attr:`ctrl_sock` and :attr:`out_sock` (if :attr:`out_sock_type` is zmq.ROUTER) in poller."""
+        self.out_sockets = {}
+        self._active = True
+
+    def _register_pollin(self):
+        """Register :attr:`in_sock`, :attr:`ctrl_sock` and :attr:`out_sock` (if :attr:`out_sock_type` is zmq.ROUTER)
+        in poller."""
         self.poller = zmq.Poller()
         self.poller.register(self.in_sock, zmq.POLLIN)
         self.poller.register(self.ctrl_sock, zmq.POLLIN)
-        if self.out_sock_type == zmq.ROUTER:
+        if self.out_sock_type == zmq.ROUTER and not self.args.dynamic_routing_out:
             self.poller.register(self.out_sock, zmq.POLLIN)
+        if self.in_connect_sock is not None:
+            self.poller.register(self.in_connect_sock, zmq.POLLIN)
 
     def pause_pollin(self):
         """Remove :attr:`in_sock` from the poller """
@@ -77,7 +114,9 @@ class Zmqlet:
         self.poller.register(self.in_sock)
 
     @staticmethod
-    def get_ctrl_address(host: Optional[str], port_ctrl: Optional[str], ctrl_with_ipc: bool) -> Tuple[str, bool]:
+    def get_ctrl_address(
+        host: Optional[str], port_ctrl: Optional[str], ctrl_with_ipc: bool
+    ) -> Tuple[str, bool]:
         """Get the address of the control socket
 
         :param host: the host in the arguments
@@ -107,17 +146,19 @@ class Zmqlet:
         # the priority ctrl_sock > in_sock
         if socks.get(self.ctrl_sock) == zmq.POLLIN:
             return self.ctrl_sock
-        elif socks.get(self.out_sock) == zmq.POLLIN:
+        elif socks.get(self.out_sock, None) == zmq.POLLIN:
             return self.out_sock  # for dealer return idle status to router
         elif socks.get(self.in_sock) == zmq.POLLIN:
             return self.in_sock
+        elif socks.get(self.in_connect_sock) == zmq.POLLIN:
+            return self.in_connect_sock
 
-    def close_sockets(self):
+    def _close_sockets(self):
         """Close input, output and control sockets of this `Zmqlet`. """
         for k in self.opened_socks:
             k.close()
 
-    def init_sockets(self) -> Tuple:
+    def _init_sockets(self) -> Tuple:
         """Initialize all sockets and the ZMQ context.
 
         :return: A tuple of four pieces:
@@ -133,37 +174,75 @@ class Zmqlet:
         self.logger.debug('setting up sockets...')
         try:
             if self.ctrl_with_ipc:
-                ctrl_sock, ctrl_addr = _init_socket(ctx, self.ctrl_addr, None, SocketType.PAIR_BIND,
-                                                    use_ipc=self.ctrl_with_ipc)
+                ctrl_sock, ctrl_addr = _init_socket(
+                    ctx,
+                    self.ctrl_addr,
+                    None,
+                    SocketType.PAIR_BIND,
+                    use_ipc=self.ctrl_with_ipc,
+                )
             else:
-                ctrl_sock, ctrl_addr = _init_socket(ctx, __default_host__, self.args.port_ctrl, SocketType.PAIR_BIND)
+                ctrl_sock, ctrl_addr = _init_socket(
+                    ctx, __default_host__, self.args.port_ctrl, SocketType.PAIR_BIND
+                )
             self.logger.debug(f'control over {colored(ctrl_addr, "yellow")}')
 
-            in_sock, in_addr = _init_socket(ctx, self.args.host_in, self.args.port_in, self.args.socket_in,
-                                            self.identity,
-                                            ssh_server=self.args.ssh_server,
-                                            ssh_keyfile=self.args.ssh_keyfile,
-                                            ssh_password=self.args.ssh_password)
-            self.logger.debug(f'input {self.args.host_in}:{colored(self.args.port_in, "yellow")}')
+            in_sock, in_addr = _init_socket(
+                ctx,
+                self.args.host_in,
+                self.args.port_in,
+                self.args.socket_in,
+                self.identity,
+                ssh_server=self.args.ssh_server,
+                ssh_keyfile=self.args.ssh_keyfile,
+                ssh_password=self.args.ssh_password,
+            )
+            self.logger.debug(
+                f'input {self.args.host_in}:{colored(self.args.port_in, "yellow")}'
+            )
+            out_sock, out_addr = _init_socket(
+                ctx,
+                self.args.host_out,
+                self.args.port_out,
+                self.args.socket_out,
+                self.identity,
+                ssh_server=self.args.ssh_server,
+                ssh_keyfile=self.args.ssh_keyfile,
+                ssh_password=self.args.ssh_password,
+            )
 
-            out_sock, out_addr = _init_socket(ctx, self.args.host_out, self.args.port_out, self.args.socket_out,
-                                              self.identity,
-                                              ssh_server=self.args.ssh_server,
-                                              ssh_keyfile=self.args.ssh_keyfile,
-                                              ssh_password=self.args.ssh_password
-                                              )
-            self.logger.debug(f'output {self.args.host_out}:{colored(self.args.port_out, "yellow")}')
+            in_connect = None
+            if self.args.hosts_in_connect:
+                for address in self.args.hosts_in_connect:
+                    if in_connect is None:
+                        host, port = address.split(':')
 
-            self.logger.info(
+                        in_connect, _ = _init_socket(
+                            ctx,
+                            host,
+                            port,
+                            SocketType.ROUTER_CONNECT,
+                            self.identity,
+                            ssh_server=self.args.ssh_server,
+                            ssh_keyfile=self.args.ssh_keyfile,
+                            ssh_password=self.args.ssh_password,
+                        )
+                    else:
+                        _connect_socket(
+                            in_connect,
+                            address,
+                            ssh_server=self.args.ssh_server,
+                            ssh_keyfile=self.args.ssh_keyfile,
+                            ssh_password=self.args.ssh_password,
+                        )
+
+            self.logger.debug(
                 f'input {colored(in_addr, "yellow")} ({self.args.socket_in.name}) '
                 f'output {colored(out_addr, "yellow")} ({self.args.socket_out.name}) '
-                f'control over {colored(ctrl_addr, "yellow")} ({SocketType.PAIR_BIND.name})')
+                f'control over {colored(ctrl_addr, "yellow")} ({SocketType.PAIR_BIND.name})'
+            )
 
-            self.in_sock_type = in_sock.type
-            self.out_sock_type = out_sock.type
-            self.ctrl_sock_type = ctrl_sock.type
-
-            return ctx, in_sock, out_sock, ctrl_sock
+            return ctx, in_sock, out_sock, ctrl_sock, in_connect
         except zmq.error.ZMQError as ex:
             self.close()
             raise ex
@@ -178,30 +257,89 @@ class Zmqlet:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    def close(self):
+    def close(self, *args, **kwargs):
         """Close all sockets and shutdown the ZMQ context associated to this `Zmqlet`.
 
         .. note::
             This method is idempotent.
 
+        :param args: Extra positional arguments
+        :param kwargs: Extra key-value arguments
         """
+        self._active = (
+            False  # Important to avoid sending idle back while flushing in socket
+        )
         if not self.is_closed:
             self.is_closed = True
-            self.close_sockets()
+            self._close_sockets()
             if hasattr(self, 'ctx'):
                 self.ctx.term()
             self.print_stats()
 
     def print_stats(self):
         """Print out the network stats of of itself """
-        self.logger.info(f'#sent: {self.msg_sent} '
-                         f'#recv: {self.msg_recv} '
-                         f'sent_size: {get_readable_size(self.bytes_sent)} '
-                         f'recv_size: {get_readable_size(self.bytes_recv)}')
-        profile_logger.info({'msg_sent': self.msg_sent,
-                             'msg_recv': self.msg_recv,
-                             'bytes_sent': self.bytes_sent,
-                             'bytes_recv': self.bytes_recv})
+        self.logger.debug(
+            f'#sent: {self.msg_sent} '
+            f'#recv: {self.msg_recv} '
+            f'sent_size: {get_readable_size(self.bytes_sent)} '
+            f'recv_size: {get_readable_size(self.bytes_recv)}'
+        )
+
+    def _init_dynamic_out_socket(self, host_out, port_out):
+        out_sock, _ = _init_socket(
+            self.ctx,
+            host_out,
+            port_out,
+            SocketType.DEALER_CONNECT,
+            self.identity,
+            ssh_server=self.args.ssh_server,
+            ssh_keyfile=self.args.ssh_keyfile,
+            ssh_password=self.args.ssh_password,
+        )
+        self.logger.debug(f'output {host_out}:{colored(port_out, "yellow")}')
+        return out_sock
+
+    def _get_dynamic_out_socket(self, target_pod, as_streaming=False):
+        host = get_connect_host(target_pod.host, False, self.args)
+        out_sock = self._init_dynamic_out_socket(host, target_pod.port)
+
+        if as_streaming:
+            out_sock = ZMQStream(out_sock, self.io_loop)
+
+        self.opened_socks.append(out_sock)
+        self.out_sockets[target_pod.full_address] = out_sock
+        return out_sock
+
+    def _get_dynamic_next_routes(self, message):
+        routing_table = RoutingTable(message.envelope.routing_table)
+        next_targets = routing_table.get_next_targets()
+        next_routes = []
+        for target, send_as_bind in next_targets:
+            pod_address = target.active_target_pod.full_address
+
+            if send_as_bind:
+                out_socket = self.out_sock
+            else:
+                out_socket = self.out_sockets.get(pod_address, None)
+                if out_socket is None:
+                    out_socket = self._get_dynamic_out_socket(target.active_target_pod)
+
+            next_routes.append((target, out_socket))
+        return next_routes
+
+    def _send_message_dynamic(self, msg: 'Message'):
+        next_routes = self._get_dynamic_next_routes(msg)
+        for routing_table, out_sock in next_routes:
+            new_envelope = jina_pb2.EnvelopeProto()
+            new_envelope.CopyFrom(msg.envelope)
+            new_envelope.routing_table.CopyFrom(routing_table.proto)
+            new_message = Message(request=msg.request, envelope=new_envelope)
+
+            new_message.envelope.receiver_id = (
+                routing_table.active_target_pod.target_identity
+            )
+
+            self._send_message_via(out_sock, new_message)
 
     def send_message(self, msg: 'Message'):
         """Send a message via the output socket
@@ -209,26 +347,49 @@ class Zmqlet:
         :param msg: the protobuf message to send
         """
         # choose output sock
-
         if msg.is_data_request:
-            o_sock = self.out_sock
+            if self.args.dynamic_routing_out:
+                self._send_message_dynamic(msg)
+                return
+            out_sock = self.out_sock
         else:
-            o_sock = self.ctrl_sock
+            out_sock = self.ctrl_sock
 
-        self.bytes_sent += send_message(o_sock, msg, **self.send_recv_kwargs)
+        self._send_message_via(out_sock, msg)
+
+    def _send_message_via(self, socket, msg):
+        self.bytes_sent += send_message(socket, msg, **self.send_recv_kwargs)
         self.msg_sent += 1
 
-        if o_sock == self.out_sock and self.in_sock_type == zmq.DEALER:
-            self.send_idle()
+        if self._active and socket == self.out_sock and self.in_sock_type == zmq.DEALER:
+            self._send_idle_to_router()
 
-    def send_idle(self):
+    def _send_control_to_router(self, command, raise_exception=False):
+        msg = ControlMessage(command, pod_name=self.name, identity=self.identity)
+        self.bytes_sent += send_message(
+            self.in_sock, msg, raise_exception=raise_exception, **self.send_recv_kwargs
+        )
+        self.msg_sent += 1
+        self.logger.debug(
+            f'control message {command} with id {self.identity} is sent to the router'
+        )
+
+    def _send_idle_to_router(self):
         """Tell the upstream router this dealer is idle """
-        msg = ControlMessage('IDLE', pod_name=self.name, identity=self.identity)
-        self.bytes_sent += send_message(self.in_sock, msg, **self.send_recv_kwargs)
-        self.msg_sent += 1
-        self.logger.debug(f'idle and i {self.identity} told the router')
+        self._send_control_to_router('IDLE')
 
-    def recv_message(self, callback: Callable[['Message'], 'Message'] = None) -> 'Message':
+    def _send_cancel_to_router(self, raise_exception=False):
+        """
+        Tell the upstream router this dealer is canceled
+
+        :param raise_exception: if true: raise an exception which might occur during send, if false: log error
+        """
+        self._active = False
+        self._send_control_to_router('CANCEL', raise_exception)
+
+    def recv_message(
+        self, callback: Optional[Callable[['Message'], 'Message']] = None
+    ) -> 'Message':
         """Receive a protobuf message from the input socket
 
         :param callback: the callback function, which modifies the recevied message inplace.
@@ -241,13 +402,8 @@ class Zmqlet:
             self.msg_recv += 1
             if callback:
                 return callback(msg)
-
-    def clear_stats(self):
-        """Reset the internal counter of send and receive bytes to zero. """
-        self.bytes_recv = 0
-        self.bytes_sent = 0
-        self.msg_recv = 0
-        self.msg_sent = 0
+            else:
+                return msg
 
 
 class AsyncZmqlet(Zmqlet):
@@ -258,23 +414,37 @@ class AsyncZmqlet(Zmqlet):
     def _get_zmq_ctx(self):
         return zmq.asyncio.Context()
 
-    async def send_message(self, msg: 'Message', sleep: float = 0, **kwargs):
+    async def send_message(self, msg: 'Message', **kwargs):
         """Send a protobuf message in async via the output socket
 
         :param msg: the protobuf message to send
-        :param sleep: the sleep time of every two sends in millisecond.
-                A near-zero value could result in bad load balancing in the proceeding pods.
         :param kwargs: keyword arguments
         """
-        # await asyncio.sleep(sleep)  # preventing over-speed sending
+        if self.args.dynamic_routing_out:
+            asyncio.create_task(self._send_message_dynamic(msg))
+        else:
+            asyncio.create_task(self._send_message_via(self.out_sock, msg))
+
+    async def _send_message_dynamic(self, msg: 'Message'):
+        for routing_table, out_sock in self._get_dynamic_next_routes(msg):
+            new_envelope = jina_pb2.EnvelopeProto()
+            new_envelope.CopyFrom(msg.envelope)
+            new_envelope.routing_table.CopyFrom(routing_table.proto)
+            new_message = Message(request=msg.request, envelope=new_envelope)
+            asyncio.create_task(self._send_message_via(out_sock, new_message))
+
+    async def _send_message_via(self, socket, msg):
         try:
-            num_bytes = await send_message_async(self.out_sock, msg, **self.send_recv_kwargs)
+            num_bytes = await send_message_async(socket, msg, **self.send_recv_kwargs)
             self.bytes_sent += num_bytes
             self.msg_sent += 1
         except (asyncio.CancelledError, TypeError) as ex:
             self.logger.error(f'sending message error: {ex!r}, gateway cancelled?')
 
-    async def recv_message(self, callback: Callable[['Message'], Union['Message', 'Request']] = None) -> Optional['Message']:
+    async def recv_message(
+        self,
+        callback: Optional[Callable[['Message'], Union['Message', 'Request']]] = None,
+    ) -> Optional['Message']:
         """
         Receive a protobuf message in async manner.
 
@@ -288,13 +458,14 @@ class AsyncZmqlet(Zmqlet):
                 self.bytes_recv += msg.size
                 if callback:
                     return callback(msg)
+                else:
+                    return msg
             else:
-                self.logger.error('Received message is empty.')
+                self.logger.debug('Received message is empty.')
         except (asyncio.CancelledError, TypeError) as ex:
             self.logger.error(f'receiving message error: {ex!r}, gateway cancelled?')
 
     def __enter__(self):
-        time.sleep(.2)  # sleep a bit until handshake is done
         return self
 
 
@@ -307,28 +478,68 @@ class ZmqStreamlet(Zmqlet):
         It requires :mod:`tornado` and :mod:`uvloop` to be installed.
     """
 
-    def register_pollin(self):
+    def __init__(
+        self,
+        ready_event: Union['multiprocessing.Event', 'threading.Event'],
+        *args,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.is_ready_event = ready_event
+
+    def _register_pollin(self):
         """Register :attr:`in_sock`, :attr:`ctrl_sock` and :attr:`out_sock` in poller."""
         with ImportExtensions(required=True):
             import tornado.ioloop
+
             get_or_reuse_loop()
             self.io_loop = tornado.ioloop.IOLoop.current()
+        self.io_loop.add_callback(callback=lambda: self.is_ready_event.set())
         self.in_sock = ZMQStream(self.in_sock, self.io_loop)
         self.out_sock = ZMQStream(self.out_sock, self.io_loop)
         self.ctrl_sock = ZMQStream(self.ctrl_sock, self.io_loop)
+        if self.in_connect_sock is not None:
+            self.in_connect_sock = ZMQStream(self.in_connect_sock, self.io_loop)
         self.in_sock.stop_on_recv()
 
-    def close(self):
+    def _get_dynamic_out_socket(self, target_pod):
+        return super()._get_dynamic_out_socket(target_pod, as_streaming=True)
+
+    def close(self, flush: bool = True, *args, **kwargs):
         """Close all sockets and shutdown the ZMQ context associated to this `Zmqlet`.
 
         .. note::
             This method is idempotent.
+
+        :param flush: flag indicating if `sockets` need to be flushed before close is done
+        :param args: Extra positional arguments
+        :param kwargs: Extra key-value arguments
         """
+
+        # if Address already in use `self.in_sock_type` is not set
+        if (
+            not self.is_closed
+            and hasattr(self, 'in_sock_type')
+            and self.in_sock_type == zmq.DEALER
+        ):
+            try:
+                if self._active:
+                    self._send_cancel_to_router(raise_exception=True)
+            except zmq.error.ZMQError:
+                self.logger.debug(
+                    f'The dealer {self.name} can not unsubscribe from the router. '
+                    f'In case the router is down this is expected.'
+                )
+        self._active = (
+            False  # Important to avoid sending idle back while flushing in socket
+        )
         if not self.is_closed:
             # wait until the close signal is received
-            time.sleep(.01)
-            for s in self.opened_socks:
-                s.flush()
+            time.sleep(0.01)
+            if flush:
+                for s in self.opened_socks:
+                    events = s.flush()
+                    self.logger.debug(f'Handled #{events} during flush of socket')
             super().close()
             if hasattr(self, 'io_loop'):
                 try:
@@ -341,16 +552,23 @@ class ZmqStreamlet(Zmqlet):
                         self.out_sock._handle_events = lambda *args, **kwargs: None
                     if hasattr(self.ctrl_sock, '_handle_events'):
                         self.ctrl_sock._handle_events = lambda *args, **kwargs: None
+                    if hasattr(self.in_connect_sock, '_handle_events'):
+                        self.in_connect_sock._handle_events = (
+                            lambda *args, **kwargs: None
+                        )
                 except AttributeError as e:
                     self.logger.error(f'failed to stop. {e!r}')
 
     def pause_pollin(self):
         """Remove :attr:`in_sock` from the poller """
         self.in_sock.stop_on_recv()
+        self.is_polling_paused = True
 
     def resume_pollin(self):
         """Put :attr:`in_sock` back to the poller """
-        self.in_sock.on_recv(self._in_sock_callback)
+        if self.is_polling_paused:
+            self.in_sock.on_recv(self._in_sock_callback)
+            self.is_polling_paused = False
 
     def start(self, callback: Callable[['Message'], 'Message']):
         """
@@ -358,6 +576,7 @@ class ZmqStreamlet(Zmqlet):
 
         :param callback: callback function to receive the protobuf message
         """
+
         def _callback(msg, sock_type):
             msg = _parse_from_frames(sock_type, msg)
             self.bytes_recv += msg.size
@@ -371,42 +590,64 @@ class ZmqStreamlet(Zmqlet):
         self._in_sock_callback = lambda x: _callback(x, self.in_sock_type)
         self.in_sock.on_recv(self._in_sock_callback)
         self.ctrl_sock.on_recv(lambda x: _callback(x, self.ctrl_sock_type))
-        if self.out_sock_type == zmq.ROUTER:
+        if self.out_sock_type == zmq.ROUTER and not self.args.dynamic_routing_out:
             self.out_sock.on_recv(lambda x: _callback(x, self.out_sock_type))
+        if self.in_connect_sock is not None:
+            self.in_connect_sock.on_recv(
+                lambda x: _callback(x, SocketType.ROUTER_CONNECT)
+            )
         self.io_loop.start()
         self.io_loop.clear_current()
         self.io_loop.close(all_fds=True)
 
 
-def send_ctrl_message(address: str, cmd: str, timeout: int) -> 'Message':
+def send_ctrl_message(
+    address: str, cmd: Union[str, Message], timeout: int, raise_exception: bool = False
+) -> 'Message':
     """Send a control message to a specific address and wait for the response
 
     :param address: the socket address to send
     :param cmd: the control command to send
     :param timeout: the waiting time (in ms) for the response
+    :param raise_exception: raise exception when exception found
     :return: received message
     """
+    if isinstance(cmd, str):
+        # we assume ControlMessage as default
+        msg = ControlMessage(cmd)
+    else:
+        msg = cmd
+
     # control message is short, set a timeout and ask for quick response
     with zmq.Context() as ctx:
         ctx.setsockopt(zmq.LINGER, 0)
         sock, _ = _init_socket(ctx, address, None, SocketType.PAIR_CONNECT)
-        msg = ControlMessage(cmd)
-        send_message(sock, msg, timeout)
+        send_message(sock, msg, raise_exception=raise_exception, timeout=timeout)
         r = None
         try:
             r = recv_message(sock, timeout)
-        except TimeoutError:
-            pass
+        except Exception as ex:
+            if raise_exception:
+                raise ex
+            else:
+                pass
         finally:
             sock.close()
         return r
 
 
-def send_message(sock: Union['zmq.Socket', 'ZMQStream'], msg: 'Message', timeout: int = -1, **kwargs) -> int:
+def send_message(
+    sock: Union['zmq.Socket', 'ZMQStream'],
+    msg: 'Message',
+    raise_exception: bool = False,
+    timeout: int = -1,
+    **kwargs,
+) -> int:
     """Send a protobuf message to a socket
 
     :param sock: the target socket to send
     :param msg: the protobuf message
+    :param raise_exception: if true: raise an exception which might occur during send, if false: log error
     :param timeout: waiting time (in seconds) for sending
     :param kwargs: keyword arguments
     :return: the size (in bytes) of the sent message
@@ -419,9 +660,13 @@ def send_message(sock: Union['zmq.Socket', 'ZMQStream'], msg: 'Message', timeout
     except zmq.error.Again:
         raise TimeoutError(
             f'cannot send message to sock {sock} after timeout={timeout}ms, please check the following:'
-            'is the server still online? is the network broken? are "port" correct?')
+            'is the server still online? is the network broken? are "port" correct?'
+        )
     except zmq.error.ZMQError as ex:
-        default_logger.critical(ex)
+        if raise_exception:
+            raise ex
+        else:
+            default_logger.critical(ex)
     finally:
         try:
             sock.setsockopt(zmq.SNDTIMEO, -1)
@@ -445,8 +690,9 @@ def _prep_recv_socket(sock, timeout):
         sock.setsockopt(zmq.RCVTIMEO, -1)
 
 
-async def send_message_async(sock: 'zmq.Socket', msg: 'Message', timeout: int = -1,
-                             **kwargs) -> int:
+async def send_message_async(
+    sock: 'zmq.Socket', msg: 'Message', timeout: int = -1, **kwargs
+) -> int:
     """Send a protobuf message to a socket in async manner
 
     :param sock: the target socket to send
@@ -461,12 +707,13 @@ async def send_message_async(sock: 'zmq.Socket', msg: 'Message', timeout: int = 
         return msg.size
     except zmq.error.Again:
         raise TimeoutError(
-            f'cannot send message to sock {sock} after timeout={timeout}ms, please check the following:'
-            'is the server still online? is the network broken? are "port" correct? ')
+            f'cannot send message to sock {sock.getsockopt_string(zmq.LAST_ENDPOINT)} after timeout={timeout}ms, '
+            'please check the following: is the server still online? is the network broken? are "port" correct? '
+        )
     except zmq.error.ZMQError as ex:
         default_logger.critical(ex)
     except asyncio.CancelledError:
-        default_logger.error('all gateway tasks are cancelled')
+        default_logger.debug('all gateway tasks are cancelled')
     except Exception as ex:
         raise ex
     finally:
@@ -477,7 +724,7 @@ async def send_message_async(sock: 'zmq.Socket', msg: 'Message', timeout: int = 
 
 
 def recv_message(sock: 'zmq.Socket', timeout: int = -1, **kwargs) -> 'Message':
-    """ Receive a protobuf message from a socket
+    """Receive a protobuf message from a socket
 
     :param sock: the socket to pull from
     :param timeout: max wait time for pulling, -1 means wait forever
@@ -494,17 +741,19 @@ def recv_message(sock: 'zmq.Socket', timeout: int = -1, **kwargs) -> 'Message':
 
     except zmq.error.Again:
         raise TimeoutError(
-            f'no response from sock {sock} after timeout={timeout}ms, please check the following:'
-            'is the server still online? is the network broken? are "port" correct? ')
+            f'no response from sock {sock.getsockopt_string(zmq.LAST_ENDPOINT)} after timeout={timeout}ms, '
+            f'please check the following: is the server still online? is the network broken? are "port" correct? '
+        )
     except Exception as ex:
         raise ex
     finally:
         sock.setsockopt(zmq.RCVTIMEO, -1)
 
 
-async def recv_message_async(sock: 'zmq.Socket', timeout: int = -1,
-                             **kwargs) -> 'Message':
-    """ Receive a protobuf message from a socket in async manner
+async def recv_message_async(
+    sock: 'zmq.Socket', timeout: int = -1, **kwargs
+) -> 'Message':
+    """Receive a protobuf message from a socket in async manner
 
     :param sock: the socket to pull from
     :param timeout: max wait time for pulling, -1 means wait forever
@@ -523,11 +772,12 @@ async def recv_message_async(sock: 'zmq.Socket', timeout: int = -1,
     except zmq.error.Again:
         raise TimeoutError(
             f'no response from sock {sock} after timeout={timeout}ms, please check the following:'
-            'is the server still online? is the network broken? are "port" correct? ')
+            'is the server still online? is the network broken? are "port" correct? '
+        )
     except zmq.error.ZMQError as ex:
         default_logger.critical(ex)
     except asyncio.CancelledError:
-        default_logger.error('all gateway tasks are cancelled')
+        default_logger.debug('all gateway tasks are cancelled')
     except Exception as ex:
         raise ex
     finally:
@@ -556,7 +806,8 @@ def _parse_from_frames(sock_type, frames: List[bytes]) -> 'Message':
         frames = [b' '] + frames
     elif sock_type == zmq.ROUTER:
         # the router appends dealer id when receive it, we need to remove it
-        frames.pop(0)
+        if len(frames) == 4:
+            frames.pop(0)
 
     return Message(frames[1], frames[2])
 
@@ -567,20 +818,22 @@ def _get_random_ipc() -> str:
 
     :return: random IPC address
     """
-    try:
-        tmp = os.environ['JINA_IPC_SOCK_TMP']
-        if not os.path.exists(tmp):
-            raise ValueError(f'This directory for sockets ({tmp}) does not seems to exist.')
-        tmp = os.path.join(tmp, random_identity())
-    except KeyError:
-        tmp = tempfile.NamedTemporaryFile().name
+    tmp = tempfile.NamedTemporaryFile().name
+
     return f'ipc://{tmp}'
 
 
-def _init_socket(ctx: 'zmq.Context', host: str, port: Optional[int],
-                 socket_type: 'SocketType', identity: str = None,
-                 use_ipc: bool = False, ssh_server: str = None,
-                 ssh_keyfile: str = None, ssh_password: str = None) -> Tuple['zmq.Socket', str]:
+def _init_socket(
+    ctx: 'zmq.Context',
+    host: str,
+    port: Optional[int],
+    socket_type: 'SocketType',
+    identity: Optional[str] = None,
+    use_ipc: bool = False,
+    ssh_server: Optional[str] = None,
+    ssh_keyfile: Optional[str] = None,
+    ssh_password: Optional[str] = None,
+) -> Tuple['zmq.Socket', str]:
     sock = {
         SocketType.PULL_BIND: lambda: ctx.socket(zmq.PULL),
         SocketType.PULL_CONNECT: lambda: ctx.socket(zmq.PULL),
@@ -594,14 +847,13 @@ def _init_socket(ctx: 'zmq.Context', host: str, port: Optional[int],
         SocketType.PAIR_CONNECT: lambda: ctx.socket(zmq.PAIR),
         SocketType.ROUTER_BIND: lambda: ctx.socket(zmq.ROUTER),
         SocketType.DEALER_CONNECT: lambda: ctx.socket(zmq.DEALER),
+        SocketType.ROUTER_CONNECT: lambda: ctx.socket(zmq.ROUTER),
     }[socket_type]()
+
     sock.setsockopt(zmq.LINGER, 0)
 
-    if socket_type == SocketType.DEALER_CONNECT:
+    if identity is not None:
         sock.set_string(zmq.IDENTITY, identity)
-
-    # if not socket_type.is_pubsub:
-    #     sock.hwm = int(os.environ.get('JINA_SOCKET_HWM', 1))
 
     if socket_type.is_bind:
         if use_ipc:
@@ -610,7 +862,8 @@ def _init_socket(ctx: 'zmq.Context', host: str, port: Optional[int],
             # JEP2, if it is bind, then always bind to local
             if host != __default_host__:
                 default_logger.warning(
-                    f'host is set from {host} to {__default_host__} as the socket is in BIND type')
+                    f'host is set from {host} to {__default_host__} as the socket is in BIND type'
+                )
                 host = __default_host__
             if port is None:
                 sock.bind_to_random_port(f'tcp://{host}')
@@ -618,9 +871,11 @@ def _init_socket(ctx: 'zmq.Context', host: str, port: Optional[int],
                 try:
                     sock.bind(f'tcp://{host}:{port}')
                 except zmq.error.ZMQError:
-                    default_logger.error(f'error when binding port {port} to {host}, this port is occupied. '
-                                         f'If you are using Linux, try `lsof -i :{port}` to see which process '
-                                         f'occupies the port.')
+                    default_logger.error(
+                        f'error when binding port {port} to {host}, this port is occupied. '
+                        f'If you are using Linux, try `lsof -i :{port}` to see which process '
+                        f'occupies the port.'
+                    )
                     raise
     else:
         if port is None:
@@ -630,13 +885,23 @@ def _init_socket(ctx: 'zmq.Context', host: str, port: Optional[int],
 
         # note that ssh only takes effect on CONNECT, not BIND
         # that means control socket setup does not need ssh
-        if ssh_server:
-            tunnel_connection(sock, address, ssh_server, ssh_keyfile, ssh_password)
-        else:
-            sock.connect(address)
+        _connect_socket(sock, address, ssh_server, ssh_keyfile, ssh_password)
 
     if socket_type in {SocketType.SUB_CONNECT, SocketType.SUB_BIND}:
         # sock.setsockopt(zmq.SUBSCRIBE, identity.encode('ascii') if identity else b'')
         sock.subscribe('')  # An empty shall subscribe to all incoming messages
 
     return sock, sock.getsockopt_string(zmq.LAST_ENDPOINT)
+
+
+def _connect_socket(
+    sock,
+    address,
+    ssh_server: Optional[str] = None,
+    ssh_keyfile: Optional[str] = None,
+    ssh_password: Optional[str] = None,
+):
+    if ssh_server is not None:
+        tunnel_connection(sock, address, ssh_server, ssh_keyfile, ssh_password)
+    else:
+        sock.connect(address)

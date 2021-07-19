@@ -1,23 +1,30 @@
-__copyright__ = "Copyright (c) 2020 Jina AI Limited. All rights reserved."
-__license__ = "Apache-2.0"
-
 if False:
     from argparse import Namespace
 
 
 def pod(args: 'Namespace'):
-    """Start a Pod"""
-    from jina.peapods import Pod
+    """
+    Start a Pod
+
+    :param args: arguments coming from the CLI.
+    """
+    from jina.peapods.pods.factory import PodFactory
+
     try:
-        with Pod(args) as p:
+        with PodFactory.build_pod(args) as p:
             p.join()
     except KeyboardInterrupt:
         pass
 
 
 def pea(args: 'Namespace'):
-    """Start a Pea"""
+    """
+    Start a Pea
+
+    :param args: arguments coming from the CLI.
+    """
     from jina.peapods import Pea
+
     try:
         with Pea(args) as p:
             p.join()
@@ -25,34 +32,52 @@ def pea(args: 'Namespace'):
         pass
 
 
+# alias
+executor = pea
+
+
 def gateway(args: 'Namespace'):
-    """Start a Gateway Pod"""
+    """
+    Start a Gateway Pod
+
+    :param args: arguments coming from the CLI.
+    """
     pod(args)
 
 
-def check(args: 'Namespace'):
-    """Check jina config, settings, imports, network etc"""
-    from jina.checker import ImportChecker
-    ImportChecker(args)
-
-
 def ping(args: 'Namespace'):
+    """
+    Check the connectivity of a Pea
+
+    :param args: arguments coming from the CLI.
+    """
     from jina.checker import NetworkChecker
+
     NetworkChecker(args)
 
 
 def client(args: 'Namespace'):
-    """Start a client connects to the gateway"""
+    """
+    Start a client connects to the gateway
+
+    :param args: arguments coming from the CLI.
+    """
     from jina.clients import Client
+
     Client(args)
 
 
 def export_api(args: 'Namespace'):
+    """
+    Export the API
+
+    :param args: arguments coming from the CLI.
+    """
     import json
     from .export import api_to_dict
     from jina.jaml import JAML
     from jina import __version__
-    from jina.logging import default_logger
+    from jina.logging.predefined import default_logger
     from jina.schemas import get_full_schema
 
     if args.yaml_path:
@@ -80,43 +105,64 @@ def export_api(args: 'Namespace'):
             default_logger.info(f'API is exported to {f_name}')
 
 
-def hello_world(args: 'Namespace'):
-    from jina.helloworld.fashion import hello_world
-    hello_world(args)
-
-
 def hello(args: 'Namespace'):
-    if args.hello == 'fashion':
-        from jina.helloworld.fashion import hello_world
-    elif args.hello == 'chatbot':
-        from jina.helloworld.chatbot import hello_world
-    elif args.hello == 'multimodal':
-        from jina.helloworld.multimodal import hello_world
-    else:
-        raise ValueError(f'must be one of [`fashion`, `chatbot`, `multimodal`]')
+    """
+    Run any of the hello world examples
 
-    hello_world(args)
+    :param args: arguments coming from the CLI.
+    """
+    if args.hello == 'fashion':
+        from jina.helloworld.fashion.app import hello_world
+
+        hello_world(args)
+    elif args.hello == 'chatbot':
+        from jina.helloworld.chatbot.app import hello_world
+
+        hello_world(args)
+    elif args.hello == 'multimodal':
+        from jina.helloworld.multimodal.app import hello_world
+
+        hello_world(args)
+    elif args.hello == 'fork':
+        from jina.helloworld.fork import fork_hello
+
+        fork_hello(args)
+    else:
+        raise ValueError(f'must be one of [`fashion`, `chatbot`, `multimodal`, `fork`]')
 
 
 def flow(args: 'Namespace'):
-    """Start a Flow from a YAML file or a docker image"""
-    from jina.flow import Flow
+    """
+    Start a Flow from a YAML file or a docker image
+
+    :param args: arguments coming from the CLI.
+    """
+    from jina import Flow
+
     if args.uses:
         f = Flow.load_config(args.uses)
         with f:
             f.block()
     else:
-        from jina.logging import default_logger
-        default_logger.critical('start a flow from CLI requires a valid "--uses"')
+        raise ValueError('start a flow from CLI requires a valid `--uses`')
 
 
 def optimizer(args: 'Namespace'):
-    """Start an optimization from a YAML file"""
+    """
+    Start an optimization from a YAML file
+
+    :param args: arguments coming from the CLI.
+    """
     from jina.optimizers import run_optimizer_cli
+
     run_optimizer_cli(args)
 
 
 def hub(args: 'Namespace'):
-    """Start a hub builder for build, push, pull"""
-    from jina.docker.hubio import HubIO
+    """
+    Start a hub builder for push, pull
+    :param args: arguments coming from the CLI.
+    """
+    from jina.hubble.hubio import HubIO
+
     getattr(HubIO(args), args.hub)()

@@ -5,22 +5,27 @@ on:
     tags:
       - "v*"  # push to version tags trigger the build
 
+#on:
+#  push:
+#    branches-ignore:
+#      - '**'  # temporally disable this action
 
 jobs:
   update-schema:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-        with:
-          submodules: true
       - uses: actions/checkout@v2
         with:
           repository: jina-ai/api
           path: schema
           token: ${{ secrets.JINA_DEV_BOT }}
-      - uses: actions/setup-python@v1
+      - uses: actions/setup-python@v2
         with:
           python-version: 3.7
+      - uses: actions/setup-node@v2
+        with:
+          node-version: '14'
       - run: |
           JINA_VERSION=${GITHUB_REF/refs\/tags\/v/}
           JINA_MINOR_VERSION=${JINA_VERSION%.*}
@@ -32,128 +37,98 @@ jobs:
           cd schema
           mkdir -p schemas
           jina export-api --schema-path schemas/"$JINA_VERSION.json" schemas/latest.json schemas/latest --yaml-path "$JINA_VERSION.yml" latest.yml --json-path "$JINA_VERSION.json" latest.json latest
-          python -c "from daemon import _write_openapi_schema; _write_openapi_schema()"
-          python ../scripts/get-gateway-openapi.py
+          python ../scripts/get-openapi-schemas.py
+          npm install --prefix ~ snippet-enricher-cli
+          ~/node_modules/.bin/snippet-enricher-cli --input=gateway.json --targets=shell_curl > gateway-with-code.json
+          ~/node_modules/.bin/snippet-enricher-cli --input=daemon.json --targets=shell_curl > daemon-with-code.json
           cd -
       - name: redoc-cli-jinad
         uses: seeebiii/redoc-cli-github-action@v10
         with:
-          args: 'bundle schema/daemon.json -o jinad.html'
+          args: 'bundle schema/daemon-with-code.json -o jinad.html'
       - name: redoc-cli-gateway
         uses: seeebiii/redoc-cli-github-action@v10
         with:
-          args: 'bundle schema/gateway.json -o rest.html'
+          args: 'bundle schema/gateway-with-code.json -o rest.html'
       - name: push-to-api-repo
         run: |
           mkdir -p schema/daemon/
           cp jinad.html schema/daemon/index.html
           cp jinad.html schema/daemon/${{env.JINA_VERSION}}.html
-          rm schema/daemon.json
+          cp schema/daemon.json schema/daemon/${{env.JINA_VERSION}}.json
+          cp schema/daemon.json schema/daemon/latest.json
+          rm schema/daemon.json schema/daemon-with-code.json
           rm -rf schema/jinad
           mkdir -p schema/rest/
           cp rest.html schema/rest/index.html
           cp rest.html schema/rest/${{env.JINA_VERSION}}.html
-          rm schema/gateway.json
+          cp rest.html schema/rest/latest.html
+          cp schema/gateway.json schema/rest/${{env.JINA_VERSION}}.json
+          cp schema/gateway.json schema/rest/latest.json
+          rm schema/gateway.json schema/gateway-with-code.json
           cd schema
           git config --local user.email "dev-bot@jina.ai"
           git config --local user.name "Jina Dev Bot"
           git add . && git commit -m "update ${{env.JINA_VERSION}} due to ${{github.event_name}} on ${{github.repository}}" && git push
 
-  update-dashboard-version:
+  deploy-jinad-cloud-jina-ai:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - run: |
-          JINA_VERSION=${GITHUB_REF/refs\/tags\/v/}
-          echo "JINA_VERSION=${JINA_VERSION}" >> $GITHUB_ENV
-      - name: Dashboard version update
-        uses: benc-uk/workflow-dispatch@v1
+      - uses: benc-uk/workflow-dispatch@v1
         with:
-          workflow: Sync version with Jina core
-          repo: jina-ai/dashboard
+          workflow: Destroy previous & Deploy new JinaD
+          repo: jina-ai/jina-terraform
           token: ${{ secrets.JINA_DEV_BOT }}
-          ref: refs/heads/master
-          inputs: '{ "version": "${{ env.JINA_VERSION }}" }'
+          ref: refs/heads/main
+          inputs: '{ "TFID": "cloud.jina.ai", "instances": "{ \"cloud.jina.ai\": { \"type\": \"t2.micro\", \"disk\" = { \"type\" = \"gp2\", \"size\" = 20 }, \"pip\": [], \"command\": \"sudo echo Hello from cloud.jina.ai\"} }", "region": "us-east-1", "cloudflare_record_name": "cloud" }'
 
   update-doc:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v2
         with:
-          submodules: true
-      - uses: actions/setup-python@v1
+          fetch-depth: 0
+      - uses: actions/setup-python@v2
         with:
           python-version: 3.7
-      - id: get_version
+      - name: push-to-gh-pages-branch
         run: |
-          echo ::set-output name=JINA_VERSION::${GITHUB_REF/refs\/tags\/v/}
-          echo ::set-output name=V_JINA_VERSION::${GITHUB_REF/refs\/tags\//}
-      # Tell docs repo jina is going to release
-      - name: send-repository-dispatch-event-to-docs
-        uses: peter-evans/repository-dispatch@v1
-        with:
-          token: ${{ secrets.JINA_DEV_BOT }}
-          repository: jina-ai/docs
-          event-type: jina-release-event
+          git config --local user.email "dev-bot@jina.ai"
+          git config --local user.name "Jina Dev Bot"
+          git checkout gh-pages
+          git merge origin/master
+          pip install .[devel]
+          cd docs
+          pip install -r requirements.txt
+          docker run --rm \
+            -v $(pwd)/proto:/out \
+            -v $(pwd)/../jina/proto:/protos \
+            pseudomuto/protoc-gen-doc --doc_opt=markdown,docs.md
+          make dirhtml
+          cd ./_build/dirhtml/
+          cp -r ./ ../../
+          cd -
+          rm -rf ./_build/dirhtml/
+          ls -la
+          touch .nojekyll
+          cp 404/index.html 404.html
+          echo docs.jina.ai > CNAME
+          git add api cli proto
+          git add . && git commit -m "chore(docs): update docs due to ${{github.event_name}} on ${{github.repository}}"
+          git status
+          git push origin gh-pages
 
   update-docker:
     needs: update-doc
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        tag_stage: ["", "-devel", "-daemon"]
-        tag_pyversion: ["-py37", "-py38", "-py39"]
     steps:
-      - uses: actions/checkout@v2
-      - name: Set envs and versions
-        run: |
-          echo "VCS_REF=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-          echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
-          echo "JINA_VERSION=${GITHUB_REF/refs\/tags\/v/}" >> $GITHUB_ENV
-          echo "V_JINA_VERSION=${GITHUB_REF/refs\/tags\//}" >> $GITHUB_ENV
-          JINA_VERSION=${GITHUB_REF/refs\/tags\/v/}
-          JINA_MINOR_VERSION=${JINA_VERSION%.*}
-          echo "JINA_MINOR_VERSION=${JINA_MINOR_VERSION}" >> $GITHUB_ENV
-
-          if [[ "${{ matrix.tag_pyversion }}" == "-py38" ]]; then
-            echo "PY_VERSION=3.8" >> $GITHUB_ENV
-          elif [[ "${{ matrix.tag_pyversion }}" == "-py39" ]]; then
-            echo "PY_VERSION=3.9" >> $GITHUB_ENV
-          else
-            echo "PY_VERSION=3.7" >> $GITHUB_ENV
-            echo "TAG_ALIAS=jinaai/jina:latest${{ matrix.tag_stage }}, jinaai/jina:$JINA_VERSION${{ matrix.tag_stage }}, jinaai/jina:$JINA_MINOR_VERSION${{ matrix.tag_stage }}" >> $GITHUB_ENV
-          fi
-
-          if [[ "${{ matrix.tag_stage }}" == "-daemon" ]]; then
-            echo "BUILD_ARG=jina_daemon" >> $GITHUB_ENV
-          elif [[ "${{ matrix.tag_stage }}" == "-devel" ]]; then
-            echo "BUILD_ARG=jina_devel" >> $GITHUB_ENV
-          else
-            echo "BUILD_ARG=jina_base" >> $GITHUB_ENV
-          fi
-      - name: Set up Docker Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@v1
+      - uses: benc-uk/workflow-dispatch@v1
         with:
-          install: true
-      - name: Login to DockerHub
-        uses: docker/login-action@v1
-        with:
-          username: ${{ secrets.DOCKERHUB_DEVBOT_USER }}
-          password: ${{ secrets.DOCKERHUB_DEVBOT_TOKEN }}
-      - run: |
-          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-      - name: Build and push
-        uses: docker/build-push-action@v2
-        with:
-          context: .
-          file: Dockerfiles/debianx.Dockerfile
-          platforms: linux/armhf,linux/amd64,linux/arm/v6
-          push: true
-          tags: jinaai/jina:latest${{ matrix.tag_pyversion }}${{ matrix.tag_stage }}, jinaai/jina:${{env.JINA_VERSION}}${{ matrix.tag_pyversion }}${{ matrix.tag_stage }}, jinaai/jina:${{env.JINA_MINOR_VERSION}}${{ matrix.tag_pyversion }}${{ matrix.tag_stage }}, ${{env.TAG_ALIAS}}
-          build-args: BUILD_DATE, JINA_VERSION, VCS_REF, PY_VERSION
-          target: ${{env.BUILD_ARG}}
+          workflow: Manual Docker Build
+          token: ${{ secrets.JINA_DEV_BOT }}
+          inputs: '{ "release_token": "${{ env.release_token }}", "triggered_by": "TAG"}'
+        env:
+          release_token: ${{ secrets.JINA_CORE_RELEASE_TOKEN }}
 
   create-release:
     needs: update-doc
@@ -163,7 +138,7 @@ jobs:
         uses: actions/checkout@v2
         with:
           ref: 'master'
-      - uses: actions/setup-python@v1
+      - uses: actions/setup-python@v2
         with:
           python-version: 3.7
       - run: |

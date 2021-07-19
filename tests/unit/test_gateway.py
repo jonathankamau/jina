@@ -6,31 +6,23 @@ import numpy as np
 import pytest
 
 from jina import Document
-from jina.drivers.control import BaseControlDriver
 from jina.enums import CompressAlgo
-from jina.executors.encoders import BaseEncoder
-from jina.flow import Flow
+from jina import Flow
 from tests import random_docs
 
 
-class DummyEncoder(BaseEncoder):
-    def encode(self, data, *args, **kwargs):
-        pass
-
-
+@pytest.mark.slow
 @pytest.mark.parametrize('compress_algo', list(CompressAlgo))
 def test_compression(compress_algo, mocker):
-    class CompressCheckDriver(BaseControlDriver):
-
-        def __call__(self, *args, **kwargs):
-            assert self.req._envelope.compression.algorithm == str(compress_algo)
 
     response_mock = mocker.Mock()
 
-    f = (Flow(compress=str(compress_algo))
-         .add(uses='- !CompressCheckDriver {}')
-         .add(name='DummyEncoder', parallel=2)
-         .add(uses='- !CompressCheckDriver {}'))
+    f = (
+        Flow(compress=str(compress_algo))
+        .add()
+        .add(name='DummyEncoder', parallel=2)
+        .add()
+    )
 
     with f:
         f.index(random_docs(10), on_done=response_mock)
@@ -38,37 +30,36 @@ def test_compression(compress_algo, mocker):
     response_mock.assert_called()
 
 
-@pytest.mark.parametrize('rest_api', [True, False])
-def test_grpc_gateway_concurrency(rest_api):
+@pytest.mark.slow
+@pytest.mark.parametrize('protocol', ['websocket', 'grpc', 'http'])
+def test_grpc_gateway_concurrency(protocol):
     def _validate(req, start, status_codes, durations, index):
         end = time.time()
-        durations[index] = (end - start)
+        durations[index] = end - start
         status_codes[index] = req.status.code
 
     def _request(f, status_codes, durations, index):
         start = time.time()
         f.index(
-            input_fn=(Document() for _ in range(256)),
+            inputs=(Document() for _ in range(256)),
             on_done=functools.partial(
                 _validate,
                 start=start,
                 status_codes=status_codes,
                 durations=durations,
-                index=index
+                index=index,
             ),
-            batch_size=16
+            batch_size=16,
         )
 
-    f = Flow(restful=rest_api).add(parallel=2)
+    f = Flow(protocol=protocol).add(parallel=2)
     concurrency = 100
     with f:
         threads = []
         status_codes = [None] * concurrency
         durations = [None] * concurrency
         for i in range(concurrency):
-            t = Thread(
-                target=_request, args=(
-                    f, status_codes, durations, i))
+            t = Thread(target=_request, args=(f, status_codes, durations, i))
             threads.append(t)
             t.start()
 

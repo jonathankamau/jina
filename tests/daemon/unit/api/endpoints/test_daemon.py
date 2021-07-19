@@ -1,7 +1,9 @@
 import os
 from pathlib import Path
 
-from daemon.stores.helper import get_workspace_path
+from daemon.helper import get_workspace_path
+from daemon.models.workspaces import WorkspaceItem
+from jina.enums import RemoteWorkspaceState
 
 cur_dir = Path(__file__).parent
 
@@ -22,7 +24,16 @@ def test_status(fastapi_client):
 
 
 def test_upload(fastapi_client):
-    response = fastapi_client.post('/workspaces', files=[('files', open(str(cur_dir / d), 'rb')) for d in deps])
+    response = fastapi_client.post(
+        '/workspaces', files=[('files', open(str(cur_dir / d), 'rb')) for d in deps]
+    )
     assert response.status_code == 201
+    response_json = response.json()
+    workspace_id = next(iter(response_json))
+    item = WorkspaceItem(**response_json[workspace_id])
+    assert item.state == RemoteWorkspaceState.PENDING
+    assert item.metadata is None
+    assert item.arguments is None
+
     for d in deps:
-        os.path.exists(get_workspace_path(response.json(), d))
+        os.path.exists(get_workspace_path(workspace_id, d))

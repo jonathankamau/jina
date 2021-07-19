@@ -1,16 +1,15 @@
 import os
 import pytest
 
-from jina.flow import Flow
-from jina.peapods.pods import BasePod
+from jina import Flow
+from jina.peapods.pods import Pod
 from jina.parsers import set_pod_parser
 
 NUM_DOCS = 100
 cur_dir = os.path.dirname(os.path.abspath(__file__))
 
 
-@pytest.mark.parametrize('flow_log_id',
-                         [None, 'identity_flow'])
+@pytest.mark.parametrize('flow_log_id', [None, 'identity_flow'])
 def test_logging(monkeypatch, flow_log_id):
     from fluent import asynchandler as fluentasynchandler
 
@@ -25,8 +24,7 @@ def test_logging(monkeypatch, flow_log_id):
 
     monkeypatch.setattr(fluentasynchandler.FluentHandler, "emit", mock_emit)
 
-    with Flow(identity='identity_flow').add(name='pod1'). \
-            add(name='pod2'):
+    with Flow(identity='identity_flow').add(name='pod1').add(name='pod2'):
         pass
 
 
@@ -45,5 +43,5 @@ def test_logging_pod(monkeypatch):
     monkeypatch.setattr(fluentasynchandler.FluentHandler, "emit", mock_emit)
 
     args = set_pod_parser().parse_args(['--identity', 'logging_id'])
-    with BasePod(args):
+    with Pod(args):
         pass

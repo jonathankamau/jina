@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Union
 
 from ..mixin import ProtoTypeMixin
 from ...excepts import BadNamedScoreType
@@ -47,8 +47,12 @@ class NamedScore(ProtoTypeMixin):
 
     """
 
-    def __init__(self, score: Optional[jina_pb2.NamedScoreProto] = None,
-                 copy: bool = False, **kwargs):
+    def __init__(
+        self,
+        score: Optional[Union[jina_pb2.NamedScoreProto, 'NamedScore']] = None,
+        copy: bool = False,
+        **kwargs,
+    ):
         self._pb_body = jina_pb2.NamedScoreProto()
         try:
             if isinstance(score, jina_pb2.NamedScoreProto):
@@ -56,19 +60,41 @@ class NamedScore(ProtoTypeMixin):
                     self._pb_body.CopyFrom(score)
                 else:
                     self._pb_body = score
+            elif isinstance(score, NamedScore):
+                if copy:
+                    self._pb_body.CopyFrom(score._pb_body)
+                else:
+                    self._pb_body = score._pb_body
             elif score is not None:
                 # note ``None`` is not considered as a bad type
                 raise ValueError(f'{typename(score)} is not recognizable')
         except Exception as ex:
-            raise BadNamedScoreType(f'fail to construct a NamedScore from {score}') from ex
-
+            raise BadNamedScoreType(
+                f'fail to construct a NamedScore from {score}'
+            ) from ex
         self.set_attrs(**kwargs)
+
+    @property
+    def value(self) -> float:
+        """
+        Return the ``value`` of this NamedScore, the `id` of which this NamedScore is a score.
+        :return:: the score value
+        """
+        return self._pb_body.value
+
+    @value.setter
+    def value(self, val: float):
+        """
+        Set the ``value`` to :attr:`value`.
+        :param val: The score value to set
+        """
+        self._pb_body.value = val
 
     @property
     def ref_id(self) -> str:
         """
-        Return the ``ref_id`` of this NamedScore, the `id` of which this NamedScore is a score. 
-        :returns: the ref_id
+        Return the ``ref_id`` of this NamedScore, the `id` of which this NamedScore is a score.
+        :return:: the ref_id
         """
         return self._pb_body.ref_id
 
@@ -81,15 +107,47 @@ class NamedScore(ProtoTypeMixin):
         self._pb_body.ref_id = val
 
     @property
+    def op_name(self) -> str:
+        """
+        Return the ``op_name`` of this NamedScore
+        :return:: the op_name
+        """
+        return self._pb_body.op_name
+
+    @op_name.setter
+    def op_name(self, val: str):
+        """
+        Set the ``op_name`` to :param: `val`.
+        :param val: The op_name value to set
+        """
+        self._pb_body.op_name = val
+
+    @property
+    def description(self) -> str:
+        """
+        Return the ``description`` of this NamedScore
+        :return:: the description
+        """
+        return self._pb_body.description
+
+    @description.setter
+    def description(self, val: str):
+        """
+        Set the ``description`` to :param: `val`.
+        :param val: The description value to set
+        """
+        self._pb_body.description = val
+
+    @property
     def operands(self) -> List['NamedScore']:
         """
         Returns list of nested NamedScore operands.
-        :returns: list of nested NamedScore operands.
+        :return:: list of nested NamedScore operands.
         """
         return [NamedScore(operand) for operand in self._pb_body.operands]
 
     def set_attrs(self, **kwargs):
-        """Udate Document fields with key-value specified in kwargs.
+        """Udate NamedScore fields with key-value specified in kwargs.
 
         :param kwargs: Key-value parameters to be set
         """
@@ -113,10 +171,15 @@ class NamedScore(ProtoTypeMixin):
                         s = self._pb_body.operands.add()
                         s.CopyFrom(score_to_add._pb_body)
                 else:
-                    raise AttributeError(f'{k} is not recognized, the only list argument is operands')
+                    raise AttributeError(
+                        f'{k} is not recognized, the only list argument is operands'
+                    )
             else:
-                if hasattr(NamedScore, k) and isinstance(getattr(NamedScore, k), property) and getattr(NamedScore,
-                                                                                                       k).fset:
+                if (
+                    hasattr(NamedScore, k)
+                    and isinstance(getattr(NamedScore, k), property)
+                    and getattr(NamedScore, k).fset
+                ):
                     # if class property has a setter
                     setattr(self, k, v)
                 elif hasattr(self._pb_body, k):

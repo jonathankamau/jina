@@ -16,16 +16,19 @@ To use these enums in YAML config, following the example below:
         parallel_type: any
 """
 
-__copyright__ = "Copyright (c) 2020 Jina AI Limited. All rights reserved."
-__license__ = "Apache-2.0"
-
-from enum import IntEnum, EnumMeta
+from enum import Enum, IntEnum, EnumMeta
 
 
 class EnumType(EnumMeta):
     """The metaclass for BetterEnum."""
 
     def __new__(cls, *args, **kwargs):
+        """Register a new EnumType
+
+        :param args: args passed to super()
+        :param kwargs: kwargs passed to super()
+        :return: the registry class
+        """
         _cls = super().__new__(cls, *args, **kwargs)
         return cls.register_class(_cls)
 
@@ -42,6 +45,7 @@ class EnumType(EnumMeta):
             reg_cls_set.add(cls.__name__)
             setattr(cls, '_registered_class', reg_cls_set)
         from .jaml import JAML
+
         JAML.register(cls)
         return cls
 
@@ -54,11 +58,18 @@ class BetterEnum(IntEnum, metaclass=EnumType):
 
     @classmethod
     def from_string(cls, s: str):
-        """Parse the enum from a string."""
+        """
+        Parse the enum from a string.
+
+        :param s: string representation of the enum value
+        :return: enum value
+        """
         try:
             return cls[s.upper()]
         except KeyError:
-            raise ValueError(f'{s.upper()} is not a valid enum for {cls!r}, must be one of {list(cls)}')
+            raise ValueError(
+                f'{s.upper()} is not a valid enum for {cls!r}, must be one of {list(cls)}'
+            )
 
     @classmethod
     def _to_yaml(cls, representer, data):
@@ -67,8 +78,13 @@ class BetterEnum(IntEnum, metaclass=EnumType):
         .. note::
             In principle, this should inherit from :class:`JAMLCompatible` directly,
             however, this method is too simple and thus replaced the parent method.
+        :param representer: pyyaml representer
+        :param data: enum value
+        :return: yaml representation
         """
-        return representer.represent_scalar('tag:yaml.org,2002:str', str(data), style='"')
+        return representer.represent_scalar(
+            'tag:yaml.org,2002:str', str(data), style='"'
+        )
 
     @classmethod
     def _from_yaml(cls, constructor, node):
@@ -77,6 +93,9 @@ class BetterEnum(IntEnum, metaclass=EnumType):
         .. note::
             In principle, this should inherit from :class:`JAMLCompatible` directly,
             however, this method is too simple and thus replaced the parent method.
+        :param constructor: unused
+        :param node: node to derive the enum value from
+        :return: enum value
         """
         return cls.from_string(node.value)
 
@@ -140,6 +159,7 @@ class SocketType(BetterEnum):
     PAIR_CONNECT = 9
     ROUTER_BIND = 10
     DEALER_CONNECT = 11
+    ROUTER_CONNECT = 13
 
     @property
     def is_bind(self) -> bool:
@@ -185,17 +205,8 @@ class SocketType(BetterEnum):
             SocketType.PUSH_BIND: SocketType.PULL_CONNECT,
             SocketType.PUB_CONNECT: SocketType.SUB_BIND,
             SocketType.PUB_BIND: SocketType.SUB_CONNECT,
-            SocketType.PAIR_CONNECT: SocketType.PAIR_BIND
+            SocketType.PAIR_CONNECT: SocketType.PAIR_BIND,
         }[self]
-
-
-class FlowOutputType(BetterEnum):
-    """The enum for representing flow output config."""
-
-    SHELL_PROC = 0  #: a shell-script, run each microservice as a process
-    SHELL_DOCKER = 1  #: a shell-script, run each microservice as a container
-    DOCKER_SWARM = 2  #: a docker-swarm YAML config
-    K8S = 3  #: a Kubernetes YAML config
 
 
 class FlowBuildLevel(BetterEnum):
@@ -207,6 +218,17 @@ class FlowBuildLevel(BetterEnum):
 
     EMPTY = 0  #: Nothing is built
     GRAPH = 1  #: The underlying graph is built, you may visualize the flow
+    RUNNING = 2  #: the graph is started and all pods are running
+
+
+class GatewayProtocolType(BetterEnum):
+    """
+    Gateway communication protocol
+    """
+
+    GRPC = 0
+    HTTP = 1
+    WEBSOCKET = 2
 
 
 class PeaRoleType(BetterEnum):
@@ -241,12 +263,8 @@ class PodRoleType(BetterEnum):
 class RequestType(BetterEnum):
     """The enum of Client mode."""
 
-    INDEX = 0
-    SEARCH = 1
-    DELETE = 2
-    UPDATE = 3
-    CONTROL = 4
-    TRAIN = 5
+    DATA = 0
+    CONTROL = 1
 
 
 class CompressAlgo(BetterEnum):
@@ -280,10 +298,11 @@ class OnErrorStrategy(BetterEnum):
         side-effect.
     """
 
-    IGNORE = 0  #: Ignore it, keep running all Drivers & Executors logics in the sequel flow
-    SKIP_EXECUTOR = 1  #: Skip all Executors in the sequel, but drivers are still called
-    SKIP_HANDLE = 2  #: Skip all Drivers & Executors in the sequel, only `pre_hook` and `post_hook` are called
-    THROW_EARLY = 3  #: Immediately throw the exception, the sequel flow will not be running at all
+    IGNORE = (
+        0  #: Ignore it, keep running all Drivers & Executors logics in the sequel flow
+    )
+    SKIP_HANDLE = 1  #: Skip all Executors in the sequel, only `pre_hook` and `post_hook` are called
+    THROW_EARLY = 2  #: Immediately throw the exception, the sequel flow will not be running at all
 
 
 class FlowInspectType(BetterEnum):
@@ -333,6 +352,93 @@ class RuntimeBackendType(BetterEnum):
 
     THREAD = 0
     PROCESS = 1
+
+
+class EmbeddingClsType(BetterEnum):
+    """Enums for representing the type of embeddings supported."""
+
+    DENSE = 0
+    SCIPY_COO = 1
+    SCIPY_CSR = 2
+    SCIPY_BSR = 3
+    SCIPY_CSC = 4
+    TORCH = 5
+    TF = 6
+
+    @property
+    def is_sparse(self) -> bool:
+        """
+        Check if is of sparse type
+
+        :return: True if the type is sparse
+        """
+        return self.value != 0
+
+    @property
+    def is_dense(self) -> bool:
+        """
+        Check if is of dense type
+
+        :return: True if the type is dense
+        """
+        return self.value == 0
+
+    @property
+    def is_scipy(self) -> bool:
+        """
+        Check if is of scipy sparse type
+
+        :return: True is of scipy sparse type
+        """
+        return self.value in [1, 2, 3, 4]
+
+    @property
+    def is_torch(self) -> bool:
+        """
+        Check if is of torch sparse type
+
+        :return: True is of torch sparse type
+        """
+        return self.value == 5
+
+    @property
+    def is_tf(self) -> bool:
+        """
+        Check if is of tf sparse type
+
+        :return: True is of tf sparse type
+        """
+        return self.value == 6
+
+    @property
+    def scipy_cls_type(self) -> str:
+        """
+        Return the specific scipy class type (coo, csr, csc, bsr)
+
+        :return: True is of scipy sparse type
+        """
+        if self.is_scipy:
+            return self.name.split('_')[1].lower()
+
+    @property
+    def is_scipy_stackable(self) -> bool:
+        """
+        Return if the specific scipy class is stackable. (BSR and CSC when stacked are converted into COO)
+
+        :return: True is class is stackable
+        """
+        return self.value in [1, 2]
+
+
+class RemoteWorkspaceState(str, Enum):
+    """Enum representing state of remote workspace created by JinaD"""
+
+    PENDING = 'PENDING'
+    CREATING = 'CREATING'
+    UPDATING = 'UPDATING'
+    ACTIVE = 'ACTIVE'
+    FAILED = 'FAILED'
+    DELETING = 'DELETING'
 
 
 def replace_enum_to_str(obj):

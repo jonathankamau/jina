@@ -1,68 +1,142 @@
 import asyncio
 import json
-import uuid
 from pathlib import Path
+from typing import List
 
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import HTTPException
 from fastapi.responses import FileResponse
-from starlette.endpoints import WebSocketEndpoint
-from starlette.types import Receive, Scope, Send
+from starlette.websockets import WebSocketState
+from websockets import ConnectionClosedOK
+from websockets.exceptions import ConnectionClosedError
 
 from ... import daemon_logger, jinad_args
-from ...stores.helper import get_workspace_path
+from ...helper import get_log_file_path
+from ...models import DaemonID
+from ...stores import get_store_from_id
 
 router = APIRouter(tags=['logs'])
 
 
-@router.get(
-    path='/logs/{workspace_id}/{log_id}'
-)
-async def _export_logs(
-        workspace_id: uuid.UUID,
-        log_id: uuid.UUID
-):
-    filepath = get_workspace_path(workspace_id, log_id, 'logging.log')
+@router.get(path='/logs/{log_id}')
+async def _export_logs(log_id: DaemonID):
+    try:
+        filepath, workspace_id = get_log_file_path(log_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail=f'log file {log_id} not found in {get_store_from_id(log_id)._kind} store',
+        )
     if not Path(filepath).is_file():
-        raise HTTPException(status_code=404, detail=f'log file {log_id} not found in workspace {workspace_id}')
+        raise HTTPException(
+            status_code=404,
+            detail=f'log file {log_id} not found in workspace {workspace_id}',
+        )
     else:
         return FileResponse(filepath)
 
 
-class LogStreamingEndpoint(WebSocketEndpoint):
+def _websocket_details(websocket: WebSocket):
+    return f'{websocket.client.host}:{websocket.client.port}'
 
-    def __init__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        super().__init__(scope, receive, send)
-        # Accessing path / query params from scope in ASGI
-        # https://asgi.readthedocs.io/en/latest/specs/www.html#websocket-connection-scope
-        info = self.scope.get('path').split('/')
-        workspace_id = info[-2]
-        log_id = info[-1]
-        self.filepath = get_workspace_path(workspace_id, log_id, 'logging.log')
-        self.active_clients = []
 
-    async def on_connect(self, websocket: WebSocket) -> None:
+class ConnectionManager:
+    """
+    Manager of websockets listening for a log stream.
+
+    TODO for now contian a single connection. Ideally there must be one
+    manager per log with a thread checking for updates in log and broadcasting
+    to active connections
+    """
+
+    def __init__(self):
+        """Instantiate a ConnectionManager."""
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        """
+        Register a new websocket.
+
+        :param websocket: websocket to register
+        """
         await websocket.accept()
+        daemon_logger.info(
+            '%s is connected to stream logs!' % _websocket_details(websocket)
+        )
+        self.active_connections.append(websocket)
 
-        self.client_details = f'{websocket.client.host}:{websocket.client.port}'
-        self.active_clients.append(websocket)
-        daemon_logger.info(f'{self.client_details} is connected to stream logs!')
+    async def disconnect(self, websocket: WebSocket):
+        """
+        Disconnect a websocket.
 
+        :param websocket: websocket to disconnect
+        """
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        if websocket.application_state != WebSocketState.DISCONNECTED:
+            await websocket.close()
+            daemon_logger.info('%s is disconnected' % _websocket_details(websocket))
+
+    async def broadcast(self, message: dict):
+        """
+        Send a json message to all registered websockets.
+
+        :param message: JSON-serializable message to be broadcast
+        """
+        daemon_logger.debug('connections: %r', self.active_connections)
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except ConnectionClosedOK:
+                await self.disconnect(connection)
+            except ConnectionClosedError:
+                await self.disconnect(connection)
+
+    def _has_active_connections(self):
+        return any(
+            connection.application_state != WebSocketState.DISCONNECTED
+            for connection in self.active_connections
+        )
+
+
+@router.websocket('/logstream/{log_id}')
+async def _logstream(websocket: WebSocket, log_id: DaemonID, timeout: int = 30):
+    manager = ConnectionManager()
+    await manager.connect(websocket)
+    client_details = _websocket_details(websocket)
+    filepath, _ = get_log_file_path(log_id)
+    try:
         if jinad_args.no_fluentd:
-            daemon_logger.warning(f'{self.client_details} asks for logstreaming but fluentd is not available')
+            daemon_logger.warning(
+                f'{client_details} asked for logstreaming but fluentd is not available'
+            )
             return
 
         # on connection the fluentd file may not flushed (aka exist) yet
-        while not Path(self.filepath).is_file():
-            daemon_logger.debug(f'still waiting {self.filepath} to be ready...')
+        n = 0
+        while (
+            not Path(filepath).is_file()
+            and websocket.application_state == WebSocketState.CONNECTED
+        ):
+            daemon_logger.debug(f'still waiting {filepath} to be ready...')
             await asyncio.sleep(1)
+            n += 1
+            if timeout > 0 and n >= timeout:
+                daemon_logger.error(
+                    f'waited for {timeout} secs for {filepath} to be ready, exiting'
+                )
+                return
 
-        with open(self.filepath) as fp:
+        daemon_logger.success(f'{filepath} is ready for streaming')
+
+        with open(filepath) as fp:
             fp.seek(0, 2)
-            daemon_logger.success(f'{self.filepath} is ready for streaming')
-            while websocket in self.active_clients:
+            delay = 0.1
+            n = 0
+            while manager._has_active_connections():
                 line = fp.readline()  # also possible to read an empty line
                 if line:
+                    daemon_logger.debug('sending line %s', line)
                     payload = None
                     try:
                         payload = json.loads(line)
@@ -70,20 +144,14 @@ class LogStreamingEndpoint(WebSocketEndpoint):
                         daemon_logger.warning(f'JSON decode error on {line}')
 
                     if payload:
-                        from websockets import ConnectionClosedOK
-                        try:
-                            await websocket.send_json(payload)
-                        except ConnectionClosedOK:
-                            break
+                        await manager.broadcast(payload)
+                        n = 0
                 else:
-                    await asyncio.sleep(0.1)
-
-    async def on_disconnect(self, websocket: WebSocket, close_code: int) -> None:
-        self.active_clients.remove(websocket)
-        daemon_logger.info(f'{self.client_details} is disconnected')
-
-
-# TODO: adding websocket in this way do not generate any docs
-#  see: https://github.com/tiangolo/fastapi/issues/1983
-router.add_websocket_route(path='/logstream/{workspace_id}/{log_id}',
-                           endpoint=LogStreamingEndpoint)
+                    await asyncio.sleep(delay)
+                    n += 1
+                    if timeout > 0 and n >= timeout / delay:
+                        return
+    except WebSocketDisconnect:
+        await manager.disconnect(websocket)
+    finally:
+        await manager.disconnect(websocket)

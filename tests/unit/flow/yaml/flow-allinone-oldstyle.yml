@@ -1,0 +1,10 @@
+jtype: Flow
+version: '1'
+pods:
+  - uses:
+    !CustomizedEncoder {}
+  - uses:
+    !BaseExecutor
+    metas:
+      name: test_indexer
+      workspace: ./indexed

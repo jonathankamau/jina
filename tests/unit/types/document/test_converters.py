@@ -2,6 +2,7 @@ import os
 
 import numpy as np
 import pytest
+
 from jina import Document
 
 cur_dir = os.path.dirname(os.path.abspath(__file__))
@@ -9,24 +10,27 @@ cur_dir = os.path.dirname(os.path.abspath(__file__))
 
 def test_uri_to_blob():
     doc = Document(uri=os.path.join(cur_dir, 'test.png'))
-    doc.convert_uri_to_blob()
+    doc.convert_image_uri_to_blob()
     assert isinstance(doc.blob, np.ndarray)
+    assert doc.mime_type == 'image/png'
     assert doc.blob.shape == (85, 152, 3)  # h,w,c
 
 
 def test_datauri_to_blob():
     doc = Document(uri=os.path.join(cur_dir, 'test.png'))
-    doc.convert_uri_to_data_uri()
-    doc.convert_data_uri_to_blob()
+    doc.convert_uri_to_datauri()
+    doc.convert_image_datauri_to_blob()
     assert isinstance(doc.blob, np.ndarray)
+    assert doc.mime_type == 'image/png'
     assert doc.blob.shape == (85, 152, 3)  # h,w,c
 
 
 def test_buffer_to_blob():
     doc = Document(uri=os.path.join(cur_dir, 'test.png'))
     doc.convert_uri_to_buffer()
-    doc.convert_buffer_image_to_blob()
+    doc.convert_image_buffer_to_blob()
     assert isinstance(doc.blob, np.ndarray)
+    assert doc.mime_type == 'image/png'
     assert doc.blob.shape == (85, 152, 3)  # h,w,c
 
 
@@ -44,20 +48,26 @@ def test_convert_buffer_to_blob():
     np.testing.assert_almost_equal(doc.content.reshape([10, 10]), array)
 
 
-@pytest.mark.parametrize('arr_size,mode', [(32 * 28, 'L'),
-                                           ([32, 28], 'L'),
-                                           ([32, 28, 3], 'RGB')])
+@pytest.mark.parametrize(
+    'arr_size,mode', [(32 * 28, 'L'), ([32, 28], 'L'), ([32, 28, 3], 'RGB')]
+)
 def test_convert_blob_to_uri(arr_size, mode):
     doc = Document(content=np.random.randint(0, 255, arr_size))
     assert doc.blob.any()
     assert not doc.uri
-    doc.convert_blob_to_uri(32, 28)
+    doc.convert_image_blob_to_uri(32, 28)
     assert doc.uri.startswith('data:image/png;base64,')
+    assert doc.mime_type == 'image/png'
 
 
-@pytest.mark.parametrize('uri, mimetype', [(__file__, 'text/x-python'),
-                                           ('http://google.com/index.html', 'text/html'),
-                                           ('https://google.com/index.html', 'text/html')])
+@pytest.mark.parametrize(
+    'uri, mimetype',
+    [
+        (__file__, 'text/x-python'),
+        ('http://google.com/index.html', 'text/html'),
+        ('https://google.com/index.html', 'text/html'),
+    ],
+)
 def test_convert_uri_to_buffer(uri, mimetype):
     d = Document(uri=uri)
     assert not d.buffer
@@ -66,7 +76,9 @@ def test_convert_uri_to_buffer(uri, mimetype):
     assert d.mime_type == mimetype
 
 
-@pytest.mark.parametrize('converter', ['convert_buffer_to_uri', 'convert_content_to_uri'])
+@pytest.mark.parametrize(
+    'converter', ['convert_buffer_to_uri', 'convert_content_to_uri']
+)
 def test_convert_buffer_to_uri(converter):
     d = Document(content=open(__file__).read().encode(), mime_type='text/x-python')
     assert d.buffer
@@ -82,9 +94,14 @@ def test_convert_text_to_uri(converter):
     assert d.uri.startswith('data:text/x-python;')
 
 
-@pytest.mark.parametrize('uri, mimetype', [(__file__, 'text/x-python'),
-                                           ('http://google.com/index.html', 'text/html'),
-                                           ('https://google.com/index.html', 'text/html')])
+@pytest.mark.parametrize(
+    'uri, mimetype',
+    [
+        (__file__, 'text/x-python'),
+        ('http://google.com/index.html', 'text/html'),
+        ('https://google.com/index.html', 'text/html'),
+    ],
+)
 def test_convert_uri_to_text(uri, mimetype):
     doc = Document(uri=uri, mime_type=mimetype)
     doc.convert_uri_to_text()
@@ -99,8 +116,10 @@ def test_convert_text_to_uri_and_back():
     text_from_file = open(__file__).read()
     doc = Document(content=text_from_file, mime_type='text/x-python')
     assert doc.text
+    assert doc.mime_type == 'text/x-python'
     doc.convert_text_to_uri()
     doc.convert_uri_to_text()
+    assert doc.mime_type == 'text/plain'
     assert doc.text == text_from_file
 
 
@@ -110,18 +129,16 @@ def test_convert_content_to_uri():
         d.convert_content_to_uri()
 
 
-@pytest.mark.parametrize('uri, mimetype', [(__file__, 'text/x-python'),
-                                           ('http://google.com/index.html', 'text/html'),
-                                           ('https://google.com/index.html', 'text/html')])
+@pytest.mark.parametrize(
+    'uri, mimetype',
+    [
+        (__file__, 'text/x-python'),
+        ('http://google.com/index.html', 'text/html'),
+        ('https://google.com/index.html', 'text/html'),
+    ],
+)
 def test_convert_uri_to_data_uri(uri, mimetype):
     doc = Document(uri=uri, mime_type=mimetype)
-    intialiazed_buffer = doc.buffer
-    intialiazed_uri = doc.uri
-    doc.convert_uri_to_data_uri()
-    converted_buffer = doc.buffer
-    converted_uri = doc.uri
-    print(doc.content_type)
+    doc.convert_uri_to_datauri()
     assert doc.uri.startswith(f'data:{mimetype}')
-    assert intialiazed_uri != converted_uri
-    assert converted_buffer != intialiazed_buffer
     assert doc.mime_type == mimetype

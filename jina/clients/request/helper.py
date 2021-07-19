@@ -1,12 +1,46 @@
 """Module for helper functions for clients."""
-from typing import Tuple, Sequence
+from typing import Tuple
 
-from ... import Document, Request
-from ...enums import DataInputType, RequestType
+from ...enums import DataInputType
 from ...excepts import BadDocType, BadRequestType
+from ...types.document import Document
+from ...types.request import Request
 
 
-def _new_doc_from_data(data, data_type: DataInputType, **kwargs) -> Tuple['Document', 'DataInputType']:
+def _new_data_request_from_batch(
+    _kwargs, batch, data_type, endpoint, target, parameters
+):
+    req = _new_data_request(endpoint, target, parameters)
+
+    # add docs, groundtruths fields
+    try:
+        _add_docs_groundtruths(req, batch, data_type, _kwargs)
+    except Exception as ex:
+        raise BadRequestType(
+            f'error when building {req.request_type} from {batch}'
+        ) from ex
+
+    return req
+
+
+def _new_data_request(endpoint, target, parameters):
+    req = Request()
+    req = req.as_typed_request('data')
+
+    # set up header
+    if endpoint:
+        req.header.exec_endpoint = endpoint
+    if target:
+        req.header.target_peapod = target
+    # add parameters field
+    if parameters:
+        req.parameters = parameters
+    return req
+
+
+def _new_doc_from_data(
+    data, data_type: DataInputType, **kwargs
+) -> Tuple['Document', 'DataInputType']:
     def _build_doc_from_content():
         with Document(**kwargs) as d:
             d.content = data
@@ -29,29 +63,6 @@ def _new_doc_from_data(data, data_type: DataInputType, **kwargs) -> Tuple['Docum
         return _build_doc_from_content()
 
 
-def _new_request_from_batch(_kwargs, batch, data_type, mode, queryset):
-    req = Request()
-    req.request_type = str(mode)
-
-    try:
-        # add type-specific fields
-        if mode == RequestType.INDEX or mode == RequestType.SEARCH or mode == RequestType.TRAIN or mode == RequestType.UPDATE:
-            _add_docs_groundtruths(req, batch, data_type, _kwargs)
-        elif mode == RequestType.DELETE:
-            _add_ids(req, batch)
-        else:
-            raise NotImplementedError(f'generating request from {mode} is not yet supported')
-    except Exception as ex:
-        raise BadRequestType(f'error when building {req.request_type} from {batch}') from ex
-
-    # add common fields
-    if isinstance(queryset, Sequence):
-        req.queryset.extend(queryset)
-    elif queryset is not None:
-        req.queryset.append(queryset)
-    return req
-
-
 def _add_docs_groundtruths(req, batch, data_type, _kwargs):
     for content in batch:
         if isinstance(content, tuple) and len(content) == 2:
@@ -67,6 +78,28 @@ def _add_docs_groundtruths(req, batch, data_type, _kwargs):
             req.docs.append(d)
 
 
-def _add_ids(req, batch):
-    string_ids = (str(doc_id) for doc_id in batch)
-    req.ids.extend(string_ids)
+def _add_control_propagate(req, kwargs):
+    from ...proto import jina_pb2
+
+    extra_kwargs = kwargs[
+        'extra_kwargs'
+    ]  #: control command and args are stored inside extra_kwargs
+    _available_commands = dict(
+        jina_pb2.RequestProto.ControlRequestProto.DESCRIPTOR.enum_values_by_name
+    )
+
+    if 'command' in extra_kwargs:
+        command = extra_kwargs['command']
+    else:
+        raise BadRequestType(
+            'sending ControlRequest from Client must contain the field `command`'
+        )
+
+    if command in _available_commands:
+        req.control.command = getattr(
+            jina_pb2.RequestProto.ControlRequestProto, command
+        )
+    else:
+        raise ValueError(
+            f'command "{command}" is not supported, must be one of {_available_commands}'
+        )

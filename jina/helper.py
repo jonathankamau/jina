@@ -1,6 +1,3 @@
-__copyright__ = "Copyright (c) 2020 Jina AI Limited. All rights reserved."
-__license__ = "Apache-2.0"
-
 import asyncio
 import functools
 import json
@@ -13,25 +10,47 @@ import threading
 import time
 import uuid
 import warnings
+
 from argparse import ArgumentParser, Namespace
-from contextlib import contextmanager
 from datetime import datetime
 from itertools import islice
 from types import SimpleNamespace
-from typing import Tuple, Optional, Iterator, Any, Union, List, Dict, Set, Sequence, Iterable
-from urllib.request import Request, urlopen
+from typing import (
+    Tuple,
+    Optional,
+    Iterator,
+    Any,
+    Union,
+    List,
+    Dict,
+    Set,
+    Sequence,
+    Iterable,
+)
 
-import numpy as np
-
-__all__ = ['batch_iterator',
-           'parse_arg',
-           'random_port', 'random_identity', 'random_uuid', 'expand_env_var',
-           'colored', 'ArgNamespace', 'is_valid_local_config_source',
-           'cached_property', 'is_url',
-           'typename', 'get_public_ip', 'get_internal_ip', 'convert_tuple_to_list',
-           'run_async', 'deprecated_alias']
-
-from jina.excepts import NotSupportedError
+__all__ = [
+    'batch_iterator',
+    'parse_arg',
+    'random_port',
+    'random_identity',
+    'random_uuid',
+    'expand_env_var',
+    'colored',
+    'ArgNamespace',
+    'is_valid_local_config_source',
+    'cached_property',
+    'typename',
+    'get_public_ip',
+    'get_internal_ip',
+    'convert_tuple_to_list',
+    'run_async',
+    'deprecated_alias',
+    'countdown',
+    'CatchAllCleanupContextManager',
+    'download_mermaid_url',
+    'get_readable_size',
+    'get_or_reuse_loop',
+]
 
 
 def deprecated_alias(**aliases):
@@ -43,41 +62,62 @@ def deprecated_alias(**aliases):
     For example:
         .. highlight:: python
         .. code-block:: python
-            @deprecated_alias(buffer=('input_fn', 0), callback=('on_done', 1), output_fn=('on_done', 1))
-    """
+            @deprecated_alias(input_fn=('inputs', 0), buffer=('input_fn', 0), callback=('on_done', 1), output_fn=('on_done', 1))
 
-    def rename_kwargs(func_name: str, kwargs, aliases):
+    :param aliases: maps aliases to new arguments
+    :return: wrapper
+    """
+    from .excepts import NotSupportedError
+
+    def _rename_kwargs(func_name: str, kwargs, aliases):
         """
         Raise warnings or exceptions for deprecated arguments.
 
         :param func_name: Name of the function.
+        :param kwargs: key word arguments from the function which is decorated.
         :param aliases: kwargs with key as the deprecated arg name and value be a tuple, (new_name, deprecate_level).
         """
         for alias, new_arg in aliases.items():
             if not isinstance(new_arg, tuple):
-                raise ValueError(f'{new_arg} must be a tuple, with first element as the new name, '
-                                 f'second element as the deprecated level: 0 as warning, 1 as exception')
+                raise ValueError(
+                    f'{new_arg} must be a tuple, with first element as the new name, '
+                    f'second element as the deprecated level: 0 as warning, 1 as exception'
+                )
             if alias in kwargs:
                 new_name, dep_level = new_arg
                 if new_name in kwargs:
-                    raise NotSupportedError(f'{func_name} received both {alias} and {new_name}')
+                    raise NotSupportedError(
+                        f'{func_name} received both {alias} and {new_name}'
+                    )
 
                 if dep_level == 0:
                     warnings.warn(
                         f'`{alias}` is renamed to `{new_name}` in `{func_name}()`, the usage of `{alias}` is '
                         f'deprecated and will be removed in the next version.',
-                        DeprecationWarning)
+                        DeprecationWarning,
+                    )
                     kwargs[new_name] = kwargs.pop(alias)
                 elif dep_level == 1:
                     raise NotSupportedError(f'{alias} has been renamed to `{new_name}`')
 
     def deco(f):
-        """Set Decorator function."""
+        """
+        Set Decorator function.
+
+        :param f: function the decorator is used for
+        :return: wrapper
+        """
 
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
-            """Set wrapper function."""
-            rename_kwargs(f.__name__, kwargs, aliases)
+            """
+            Set wrapper function.
+            :param args: wrapper arguments
+            :param kwargs: wrapper key word arguments
+
+            :return: result of renamed function.
+            """
+            _rename_kwargs(f.__name__, kwargs, aliases)
             return f(*args, **kwargs)
 
         return wrapper
@@ -103,46 +143,28 @@ def get_readable_size(num_bytes: Union[int, float]) -> str:
         return f'{num_bytes / (1024 ** 3):.1f} GB'
 
 
-def call_obj_fn(obj, fn: str):
-    """
-    Get a named attribute from an object; getattr(obj, 'fn') is equivalent to obj.fn.
-
-    :param obj: Target object.
-    :param fn: Desired attribute.
-    """
-    if obj is not None and hasattr(obj, fn):
-        getattr(obj, fn)()
-
-
-def touch_dir(base_dir: str) -> None:
-    """
-    Create a directory from given path if it doesn't exist.
-
-    :param base_dir: Path of target path.
-    """
-    if not os.path.exists(base_dir):
-        os.makedirs(base_dir)
-
-
-def batch_iterator(data: Iterable[Any], batch_size: int, axis: int = 0,
-                   yield_slice: bool = False, yield_dict: bool = False) -> Iterator[Any]:
+def batch_iterator(
+    data: Iterable[Any],
+    batch_size: int,
+    axis: int = 0,
+) -> Iterator[Any]:
     """
     Get an iterator of batches of data.
 
     For example:
     .. highlight:: python
     .. code-block:: python
-            for batch in batch_iterator(data, batch_size, split_over_axis, yield_slice=yield_slice):
+            for req in batch_iterator(data, batch_size, split_over_axis):
                 # Do something with batch
 
     :param data: Data source.
     :param batch_size: Size of one batch.
     :param axis: Determine which axis to iterate for np.ndarray data.
-    :param yield_slice: Return tuple type of data if True else return np.ndarray type.
-    :param yield_dict: Return dict type of data if True else return tuple type.
+    :yield: data
     :return: An Iterator of batch data.
     """
     import numpy as np
+
     if not batch_size or batch_size <= 0:
         yield data
         return
@@ -151,32 +173,22 @@ def batch_iterator(data: Iterable[Any], batch_size: int, axis: int = 0,
         _d = data.ndim
         sl = [slice(None)] * _d
         if batch_size >= _l:
-            if yield_slice:
-                yield tuple(sl)
-            else:
-                yield data
+            yield data
             return
         for start in range(0, _l, batch_size):
             end = min(_l, start + batch_size)
             sl[axis] = slice(start, end)
-            if yield_slice:
-                yield tuple(sl)
-            else:
-                yield data[tuple(sl)]
+            yield data[tuple(sl)]
     elif isinstance(data, Sequence):
         if batch_size >= len(data):
             yield data
             return
         for _ in range(0, len(data), batch_size):
-            yield data[_:_ + batch_size]
+            yield data[_ : _ + batch_size]
     elif isinstance(data, Iterable):
-        data = iter(data)
         # as iterator, there is no way to know the length of it
         while True:
-            if yield_dict:
-                chunk = dict(islice(data, batch_size))
-            else:
-                chunk = tuple(islice(data, batch_size))
+            chunk = tuple(islice(data, batch_size))
             if not chunk:
                 return
             yield chunk
@@ -245,16 +257,112 @@ def countdown(t: int, reason: str = 'I am blocking this thread') -> None:
         sys.stdout.write('no more patience? good bye!')
 
 
-_random_names = (('first', 'great', 'local', 'small', 'right', 'large', 'young', 'early', 'major', 'clear', 'black',
-                  'whole', 'third', 'white', 'short', 'human', 'royal', 'wrong', 'legal', 'final', 'close', 'total',
-                  'prime', 'happy', 'sorry', 'basic', 'aware', 'ready', 'green', 'heavy', 'extra', 'civil', 'chief',
-                  'usual', 'front', 'fresh', 'joint', 'alone', 'rural', 'light', 'equal', 'quiet', 'quick', 'daily',
-                  'urban', 'upper', 'moral', 'vital', 'empty', 'brief',),
-                 ('world', 'house', 'place', 'group', 'party', 'money', 'point', 'state', 'night', 'water', 'thing',
-                  'order', 'power', 'court', 'level', 'child', 'south', 'staff', 'woman', 'north', 'sense', 'death',
-                  'range', 'table', 'trade', 'study', 'other', 'price', 'class', 'union', 'value', 'paper', 'right',
-                  'voice', 'stage', 'light', 'march', 'board', 'month', 'music', 'field', 'award', 'issue', 'basis',
-                  'front', 'heart', 'force', 'model', 'space', 'peter',))
+_random_names = (
+    (
+        'first',
+        'great',
+        'local',
+        'small',
+        'right',
+        'large',
+        'young',
+        'early',
+        'major',
+        'clear',
+        'black',
+        'whole',
+        'third',
+        'white',
+        'short',
+        'human',
+        'royal',
+        'wrong',
+        'legal',
+        'final',
+        'close',
+        'total',
+        'prime',
+        'happy',
+        'sorry',
+        'basic',
+        'aware',
+        'ready',
+        'green',
+        'heavy',
+        'extra',
+        'civil',
+        'chief',
+        'usual',
+        'front',
+        'fresh',
+        'joint',
+        'alone',
+        'rural',
+        'light',
+        'equal',
+        'quiet',
+        'quick',
+        'daily',
+        'urban',
+        'upper',
+        'moral',
+        'vital',
+        'empty',
+        'brief',
+    ),
+    (
+        'world',
+        'house',
+        'place',
+        'group',
+        'party',
+        'money',
+        'point',
+        'state',
+        'night',
+        'water',
+        'thing',
+        'order',
+        'power',
+        'court',
+        'level',
+        'child',
+        'south',
+        'staff',
+        'woman',
+        'north',
+        'sense',
+        'death',
+        'range',
+        'table',
+        'trade',
+        'study',
+        'other',
+        'price',
+        'class',
+        'union',
+        'value',
+        'paper',
+        'right',
+        'voice',
+        'stage',
+        'light',
+        'march',
+        'board',
+        'month',
+        'music',
+        'field',
+        'award',
+        'issue',
+        'basis',
+        'front',
+        'heart',
+        'force',
+        'model',
+        'space',
+        'peter',
+    ),
+)
 
 
 def random_name() -> str:
@@ -272,6 +380,7 @@ def random_port() -> Optional[int]:
 
     :return: A random port.
     """
+
     import threading
     import multiprocessing
     from contextlib import closing
@@ -281,22 +390,30 @@ def random_port() -> Optional[int]:
         with multiprocessing.Lock():
             with threading.Lock():
                 with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
-                    s.bind(('', port))
-                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    return s.getsockname()[1]
+                    try:
+                        s.bind(('', port))
+                        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        return s.getsockname()[1]
+                    except OSError:
+                        pass
 
     _port = None
-    if 'JINA_RANDOM_PORTS' in os.environ:
+    if 'JINA_RANDOM_PORT_MIN' in os.environ or 'JINA_RANDOM_PORT_MAX' in os.environ:
         min_port = int(os.environ.get('JINA_RANDOM_PORT_MIN', '49153'))
         max_port = int(os.environ.get('JINA_RANDOM_PORT_MAX', '65535'))
-        for _port in np.random.permutation(range(min_port, max_port + 1)):
+        all_ports = list(range(min_port, max_port + 1))
+        random.shuffle(all_ports)
+        for _port in all_ports:
             if _get_port(_port) is not None:
                 break
         else:
-            raise OSError(f'Couldn\'t find an available port in [{min_port}, {max_port}].')
+            raise OSError(
+                f'can not find an available port between [{min_port}, {max_port}].'
+            )
     else:
         _port = _get_port()
-    return _port
+
+    return int(_port)
 
 
 def random_identity(use_uuid1: bool = False) -> str:
@@ -340,13 +457,15 @@ def expand_env_var(v: str) -> Optional[Union[bool, int, str, list, float]]:
         return v
 
 
-def expand_dict(d: Dict, expand_fn=expand_env_var, resolve_cycle_ref=True) -> Dict[str, Any]:
+def expand_dict(
+    d: Dict, expand_fn=expand_env_var, resolve_cycle_ref=True
+) -> Dict[str, Any]:
     """
     Expand variables from YAML file.
 
     :param d: Target Dict.
     :param expand_fn: Parsed environment variables.
-    :param resolve_cycle_ref:
+    :param resolve_cycle_ref: Defines if cyclic references should be resolved.
     :return: Expanded variables.
     """
     expand_map = SimpleNamespace()
@@ -403,132 +522,90 @@ def expand_dict(d: Dict, expand_fn=expand_env_var, resolve_cycle_ref=True) -> Di
     return d
 
 
-_ATTRIBUTES = {'bold': 1,
-               'dark': 2,
-               'underline': 4,
-               'blink': 5,
-               'reverse': 7,
-               'concealed': 8}
+_ATTRIBUTES = {
+    'bold': 1,
+    'dark': 2,
+    'underline': 4,
+    'blink': 5,
+    'reverse': 7,
+    'concealed': 8,
+}
 
-_HIGHLIGHTS = {'on_grey': 40,
-               'on_red': 41,
-               'on_green': 42,
-               'on_yellow': 43,
-               'on_blue': 44,
-               'on_magenta': 45,
-               'on_cyan': 46,
-               'on_white': 47
-               }
+_HIGHLIGHTS = {
+    'on_grey': 40,
+    'on_red': 41,
+    'on_green': 42,
+    'on_yellow': 43,
+    'on_blue': 44,
+    'on_magenta': 45,
+    'on_cyan': 46,
+    'on_white': 47,
+}
 
 _COLORS = {
-    'grey': 30,
+    'black': 30,
     'red': 31,
     'green': 32,
     'yellow': 33,
     'blue': 34,
     'magenta': 35,
     'cyan': 36,
-    'white': 37}
+    'white': 37,
+}
 
 _RESET = '\033[0m'
-
-
-def build_url_regex_pattern():
-    """
-    Set up the regex pattern of URL.
-
-    :return: Regex pattern.
-    """
-    ul = '\u00a1-\uffff'  # Unicode letters range (must not be a raw string).
-
-    # IP patterns
-    ipv4_re = r'(?:25[0-5]|2[0-4]\d|[0-1]?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|[0-1]?\d?\d)){3}'
-    ipv6_re = r'\[[0-9a-f:.]+\]'  # (simple regex, validated later)
-
-    # Host patterns
-    hostname_re = r'[a-z' + ul + r'0-9](?:[a-z' + ul + r'0-9-]{0,61}[a-z' + ul + r'0-9])?'
-    # Max length for domain name labels is 63 characters per RFC 1034 sec. 3.1
-    domain_re = r'(?:\.(?!-)[a-z' + ul + r'0-9-]{1,63}(?<!-))*'
-    tld_re = (
-            r'\.'  # dot
-            r'(?!-)'  # can't start with a dash
-            r'(?:[a-z' + ul + '-]{2,63}'  # domain label
-                              r'|xn--[a-z0-9]{1,59})'  # or punycode label
-                              r'(?<!-)'  # can't end with a dash
-                              r'\.?'  # may have a trailing dot
-    )
-    host_re = '(' + hostname_re + domain_re + tld_re + '|localhost)'
-
-    return re.compile(
-        r'^(?:[a-z0-9.+-]*)://'  # scheme is validated separately
-        r'(?:[^\s:@/]+(?::[^\s:@/]*)?@)?'  # user:pass authentication
-        r'(?:' + ipv4_re + '|' + ipv6_re + '|' + host_re + ')'
-                                                           r'(?::\d{2,5})?'  # port
-                                                           r'(?:[/?#][^\s]*)?'  # resource path
-                                                           r'\Z', re.IGNORECASE)
-
-
-url_pat = build_url_regex_pattern()
-
-
-def is_url(text):
-    """
-    Check if the text is URL.
-
-    :param text: The target text.
-    :return: True if text is URL else False.
-    """
-    return url_pat.match(text) is not None
-
 
 if os.name == 'nt':
     os.system('color')
 
 
-def colored(text: str, color: Optional[str] = None,
-            on_color: Optional[str] = None, attrs: Union[str, list, None] = None) -> str:
+def colored(
+    text: str,
+    color: Optional[str] = None,
+    on_color: Optional[str] = None,
+    attrs: Optional[Union[str, list]] = None,
+) -> str:
     """
     Give the text with color.
 
     :param text: The target text.
     :param color: The color of text. Chosen from the following.
-    {
-        'grey': 30,
-        'red': 31,
-        'green': 32,
-        'yellow': 33,
-        'blue': 34,
-        'magenta': 35,
-        'cyan': 36,
-        'white': 37
-    }
+        {
+            'grey': 30,
+            'red': 31,
+            'green': 32,
+            'yellow': 33,
+            'blue': 34,
+            'magenta': 35,
+            'cyan': 36,
+            'white': 37
+        }
     :param on_color: The on_color of text. Chosen from the following.
-    {
-        'on_grey': 40,
-        'on_red': 41,
-        'on_green': 42,
-        'on_yellow': 43,
-        'on_blue': 44,
-        'on_magenta': 45,
-        'on_cyan': 46,
-        'on_white': 47
-    }
+        {
+            'on_grey': 40,
+            'on_red': 41,
+            'on_green': 42,
+            'on_yellow': 43,
+            'on_blue': 44,
+            'on_magenta': 45,
+            'on_cyan': 46,
+            'on_white': 47
+        }
     :param attrs: Attributes of color. Chosen from the following.
-    {
-       'bold': 1,
-       'dark': 2,
-       'underline': 4,
-       'blink': 5,
-       'reverse': 7,
-       'concealed': 8
-    }
+        {
+           'bold': 1,
+           'dark': 2,
+           'underline': 4,
+           'blink': 5,
+           'reverse': 7,
+           'concealed': 8
+        }
     :return: Colored text.
     """
     if 'JINA_LOG_NO_COLOR' not in os.environ:
         fmt_str = '\033[%dm%s'
         if color:
             text = fmt_str % (_COLORS[color], text)
-
         if on_color:
             text = fmt_str % (_HIGHLIGHTS[on_color], text)
 
@@ -542,6 +619,25 @@ def colored(text: str, color: Optional[str] = None,
     return text
 
 
+class ColorContext:
+    def __init__(self, color: str, bold: Optional[bool] = False):
+        self._color = color
+        self._bold = bold
+
+    def __enter__(self):
+        if self._bold:
+            fmt_str = '\033[1;%dm'
+        else:
+            fmt_str = '\033[0;%dm'
+
+        c = fmt_str % (_COLORS[self._color])
+        print(c, flush=True, end='')
+        return self
+
+    def __exit__(self, typ, value, traceback):
+        print(_RESET, flush=True, end='')
+
+
 class ArgNamespace:
     """Helper function for argparse.Namespace object."""
 
@@ -551,8 +647,11 @@ class ArgNamespace:
         Convert dict to an argparse-friendly list.
 
         :param kwargs: dictionary of key-values to be converted
+        :return: argument list
         """
         args = []
+        from .executors import BaseExecutor
+
         for k, v in kwargs.items():
             k = k.replace('_', '-')
             if v is not None:
@@ -563,59 +662,44 @@ class ArgNamespace:
                     args.extend([f'--{k}', *(str(vv) for vv in v)])
                 elif isinstance(v, dict):
                     args.extend([f'--{k}', json.dumps(v)])
+                elif isinstance(v, type) and issubclass(v, BaseExecutor):
+                    args.extend([f'--{k}', v.__name__])
                 else:
                     args.extend([f'--{k}', str(v)])
         return args
 
     @staticmethod
-    def kwargs2namespace(kwargs: Dict[str, Union[str, int, bool]],
-                         parser: ArgumentParser) -> Namespace:
+    def kwargs2namespace(
+        kwargs: Dict[str, Union[str, int, bool]], parser: ArgumentParser
+    ) -> Namespace:
         """
         Convert dict to a namespace.
 
         :param kwargs: dictionary of key-values to be converted
         :param parser: the parser for building kwargs into a namespace
+        :return: argument list
         """
         args = ArgNamespace.kwargs2list(kwargs)
         try:
             p_args, unknown_args = parser.parse_known_args(args)
         except SystemExit:
-            raise ValueError(f'bad arguments "{args}" with parser {parser}, '
-                             'you may want to double check your args ')
+            raise ValueError(
+                f'bad arguments "{args}" with parser {parser}, '
+                'you may want to double check your args '
+            )
         return p_args
 
     @staticmethod
-    def get_parsed_args(kwargs: Dict[str, Union[str, int, bool]],
-                        parser: ArgumentParser) -> Tuple[List[str], Namespace, List[Any]]:
-        """
-        Get all parsed args info in a dict.
-
-        :param kwargs: dictionary of key-values to be converted
-        :param parser: the parser for building kwargs into a namespace
-        """
-        args = ArgNamespace.kwargs2list(kwargs)
-        try:
-            p_args, unknown_args = parser.parse_known_args(args)
-            if unknown_args:
-                from .logging import default_logger
-                default_logger.debug(
-                    f'parser {typename(parser)} can not '
-                    f'recognize the following args: {unknown_args}, '
-                    f'they are ignored. if you are using them from a global args (e.g. Flow), '
-                    f'then please ignore this message')
-        except SystemExit:
-            raise ValueError(f'bad arguments "{args}" with parser {parser}, '
-                             'you may want to double check your args ')
-        return args, p_args, unknown_args
-
-    @staticmethod
-    def get_non_defaults_args(args: Namespace, parser: ArgumentParser, taboo: Set[Optional[str]] = None) -> Dict:
+    def get_non_defaults_args(
+        args: Namespace, parser: ArgumentParser, taboo: Optional[Set[str]] = None
+    ) -> Dict:
         """
         Get non-default args in a dict.
 
         :param args: the namespace to parse
         :param parser: the parser for referring the default values
         :param taboo: exclude keys in the final result
+        :return: non defaults
         """
         if taboo is None:
             taboo = set()
@@ -627,10 +711,13 @@ class ArgNamespace:
         return non_defaults
 
     @staticmethod
-    def flatten_to_dict(args: Union[Dict[str, 'Namespace'], 'Namespace']) -> Dict[str, Any]:
+    def flatten_to_dict(
+        args: Union[Dict[str, 'Namespace'], 'Namespace']
+    ) -> Dict[str, Any]:
         """Convert argparse.Namespace to dict to be uploaded via REST.
 
         :param args: namespace or dict or namespace to dict.
+        :return: pea args
         """
         if isinstance(args, Namespace):
             return vars(args)
@@ -656,6 +743,7 @@ def is_valid_local_config_source(path: str) -> bool:
     """
     try:
         from .jaml import parse_config_source
+
         parse_config_source(path)
         return True
     except FileNotFoundError:
@@ -668,33 +756,44 @@ def get_full_version() -> Optional[Tuple[Dict, Dict]]:
 
     :return: Version information and environment variables
     """
-    from . import __version__, __proto_version__, __jina_env__
+    import os, grpc, zmq, numpy, google.protobuf, yaml, platform
+    from . import (
+        __version__,
+        __proto_version__,
+        __jina_env__,
+        __uptime__,
+        __unset_msg__,
+    )
     from google.protobuf.internal import api_implementation
-    import os, zmq, numpy, google.protobuf, grpc, yaml
     from grpc import _grpcio_metadata
-    from pkg_resources import resource_filename
-    import platform
-    from .logging import default_logger
+    from jina.logging.predefined import default_logger
+    from uuid import getnode
+
     try:
 
-        info = {'jina': __version__,
-                'jina-proto': __proto_version__,
-                'jina-vcs-tag': os.environ.get('JINA_VCS_VERSION', '(unset)'),
-                'libzmq': zmq.zmq_version(),
-                'pyzmq': numpy.__version__,
-                'protobuf': google.protobuf.__version__,
-                'proto-backend': api_implementation._default_implementation_type,
-                'grpcio': getattr(grpc, '__version__', _grpcio_metadata.__version__),
-                'pyyaml': yaml.__version__,
-                'python': platform.python_version(),
-                'platform': platform.system(),
-                'platform-release': platform.release(),
-                'platform-version': platform.version(),
-                'architecture': platform.machine(),
-                'processor': platform.processor(),
-                'jina-resources': resource_filename('jina', 'resources')
-                }
-        env_info = {k: os.getenv(k, '(unset)') for k in __jina_env__}
+        info = {
+            'jina': __version__,
+            'jina-proto': __proto_version__,
+            'jina-vcs-tag': os.environ.get('JINA_VCS_VERSION', __unset_msg__),
+            'libzmq': zmq.zmq_version(),
+            'pyzmq': numpy.__version__,
+            'protobuf': google.protobuf.__version__,
+            'proto-backend': api_implementation._default_implementation_type,
+            'grpcio': getattr(grpc, '__version__', _grpcio_metadata.__version__),
+            'pyyaml': yaml.__version__,
+            'python': platform.python_version(),
+            'platform': platform.system(),
+            'platform-release': platform.release(),
+            'platform-version': platform.version(),
+            'architecture': platform.machine(),
+            'processor': platform.processor(),
+            'uid': getnode(),
+            'session-id': str(random_uuid(use_uuid1=True)),
+            'uptime': __uptime__,
+            'ci-vendor': get_ci_vendor() or __unset_msg__,
+        }
+
+        env_info = {k: os.getenv(k, __unset_msg__) for k in __jina_env__}
         full_version = info, env_info
     except Exception as e:
         default_logger.error(str(e))
@@ -717,12 +816,16 @@ def format_full_version_info(info: Dict, env_info: Dict) -> str:
 
 
 def _use_uvloop():
-    from .importer import ImportExtensions
-    with ImportExtensions(required=False,
-                          help_text='Jina uses uvloop to manage events and sockets, '
-                                    'it often yields better performance than builtin asyncio'):
+    if 'JINA_DISABLE_UVLOOP' in os.environ:
+        return
+    try:
         import uvloop
+
         asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except ModuleNotFoundError:
+        warnings.warn(
+            'Install `uvloop` via `pip install "jina[uvloop]"` for better performance.'
+        )
 
 
 def get_or_reuse_loop():
@@ -736,8 +839,7 @@ def get_or_reuse_loop():
         if loop.is_closed():
             raise RuntimeError
     except RuntimeError:
-        if 'JINA_DISABLE_UVLOOP' not in os.environ:
-            _use_uvloop()
+        _use_uvloop()
         # no running event loop
         # create a new loop
         loop = asyncio.new_event_loop()
@@ -760,6 +862,26 @@ def typename(obj):
         return str(obj)
 
 
+class CatchAllCleanupContextManager:
+    """
+    This context manager guarantees, that the :method:``__exit__`` of the
+    sub context is called, even when there is an Exception in the
+    :method:``__enter__``.
+
+    :param sub_context: The context, that should be taken care of.
+    """
+
+    def __init__(self, sub_context):
+        self.sub_context = sub_context
+
+    def __enter__(self):
+        pass
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            self.sub_context.__exit__(exc_type, exc_val, exc_tb)
+
+
 class cached_property:
     """The decorator to cache property of a class."""
 
@@ -778,6 +900,55 @@ class cached_property:
 
         value = obj.__dict__[f'CACHED_{self.func.__name__}'] = self.func(obj)
         return value
+
+    def __delete__(self, obj):
+        cached_value = obj.__dict__.get(f'CACHED_{self.func.__name__}', None)
+        if cached_value is not None:
+            if hasattr(cached_value, 'close'):
+                cached_value.close()
+            del obj.__dict__[f'CACHED_{self.func.__name__}']
+
+
+class _cache_invalidate:
+    """Class for cache invalidation, remove strategy.
+
+    :param func: func to wrap as a decorator.
+    :param attribute: String as the function name to invalidate cached
+        data. E.g. in :class:`cached_property` we cache data inside the class obj
+        with the `key`: `CACHED_{func.__name__}`, the func name in `cached_property`
+        is the name to invalidate.
+    """
+
+    def __init__(self, func, attribute: str):
+        self.func = func
+        self.attribute = attribute
+
+    def __call__(self, *args, **kwargs):
+        obj = args[0]
+        cached_key = f'CACHED_{self.attribute}'
+        if cached_key in obj.__dict__:
+            del obj.__dict__[cached_key]  # invalidate
+        self.func(*args, **kwargs)
+
+    def __get__(self, obj, cls):
+        from functools import partial
+
+        return partial(self.__call__, obj)
+
+
+def cache_invalidate(attribute: str):
+    """The cache invalidator decorator to wrap the method call.
+
+    Check the implementation in :class:`_cache_invalidate`.
+
+    :param attribute: The func name as was stored in the obj to invalidate.
+    :return: wrapped method.
+    """
+
+    def _wrap(func):
+        return _cache_invalidate(func, attribute)
+
+    return _wrap
 
 
 def get_now_timestamp():
@@ -799,9 +970,12 @@ def get_readable_time(*args, **kwargs):
         .. code-block:: python
             get_readable_time(seconds=1000)
 
+    :param args: arguments for datetime.timedelta
+    :param kwargs: key word arguments for datetime.timedelta
     :return: Datetime in human readable format.
     """
     import datetime
+
     secs = float(datetime.timedelta(*args, **kwargs).total_seconds())
     units = [('day', 86400), ('hour', 3600), ('minute', 60), ('second', 1)]
     parts = []
@@ -823,6 +997,7 @@ def get_internal_ip():
     :return: Private IP address.
     """
     import socket
+
     ip = '127.0.0.1'
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -834,27 +1009,51 @@ def get_internal_ip():
     return ip
 
 
-def get_public_ip():
+def get_public_ip(timeout: float = 0.3):
     """
     Return the public IP address of the gateway for connecting from other machine in the public network.
 
+    :param timeout: the seconds to wait until return None.
+
     :return: Public IP address.
+
+    .. warn::
+        Set :param:`timeout` to a large number will block the Flow.
+
     """
-    # 'https://api.ipify.org'
-    # https://ident.me
-    # ipinfo.io/ip
     import urllib.request
+
+    results = []
 
     def _get_ip(url):
         try:
-            with urllib.request.urlopen(url, timeout=1) as fp:
-                return fp.read().decode('utf8')
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=timeout) as fp:
+                _ip = fp.read().decode()
+                results.append(_ip)
+
         except:
-            pass
+            pass  # intentionally ignored, public ip is not showed
 
-    ip = _get_ip('https://api.ipify.org') or _get_ip('https://ident.me') or _get_ip('https://ipinfo.io/ip')
+    ip_server_list = [
+        'https://api.ipify.org',
+        'https://ident.me',
+        'https://checkip.amazonaws.com/',
+    ]
 
-    return ip
+    threads = []
+
+    for idx, ip in enumerate(ip_server_list):
+        t = threading.Thread(target=_get_ip, args=(ip,))
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join(timeout)
+
+    for r in results:
+        if r:
+            return r
 
 
 def convert_tuple_to_list(d: Dict):
@@ -862,7 +1061,6 @@ def convert_tuple_to_list(d: Dict):
     Convert all the tuple type values from a dict to list.
 
     :param d: Dict type of data.
-    :return: Converted dict with list type values.
     """
     for k, v in d.items():
         if isinstance(v, tuple):
@@ -931,13 +1129,18 @@ def run_async(func, *args, **kwargs):
                 return thread.result
             except AttributeError:
                 from .excepts import BadClient
-                raise BadClient('something wrong when running the eventloop, result can not be retrieved')
+
+                raise BadClient(
+                    'something wrong when running the eventloop, result can not be retrieved'
+                )
         else:
 
-            raise RuntimeError('you have an eventloop running but not using Jupyter/ipython, '
-                               'this may mean you are using Jina with other integration? if so, then you '
-                               'may want to use AsyncClient/AsyncFlow instead of Client/Flow. If not, then '
-                               'please report this issue here: https://github.com/jina-ai/jina')
+            raise RuntimeError(
+                'you have an eventloop running but not using Jupyter/ipython, '
+                'this may mean you are using Jina with other integration? if so, then you '
+                'may want to use Clien/Flow(asyncio=True). If not, then '
+                'please report this issue here: https://github.com/jina-ai/jina'
+            )
     else:
         return asyncio.run(func(*args, **kwargs))
 
@@ -951,40 +1154,6 @@ def slugify(value):
     """
     s = str(value).strip().replace(' ', '_')
     return re.sub(r'(?u)[^-\w.]', '', s)
-
-
-@contextmanager
-def change_cwd(path):
-    """
-    Change the current working dir to ``path`` in a context and set it back to the original one when leaves the context.
-
-    :param path: Target path.
-    """
-    curdir = os.getcwd()
-    os.chdir(path)
-    try:
-        yield
-    finally:
-        os.chdir(curdir)
-
-
-@contextmanager
-def change_env(key, val):
-    """
-    Change the environment of ``key`` to ``val`` in a context and set it back to the original one when leaves the context.
-
-    :param key: Old environment variable.
-    :param val: New environment variable.
-    """
-    old_var = os.environ.get(key, None)
-    os.environ[key] = val
-    try:
-        yield
-    finally:
-        if old_var:
-            os.environ[key] = old_var
-        else:
-            os.environ.pop(key)
 
 
 def is_yaml_filepath(val) -> bool:
@@ -1005,10 +1174,133 @@ def download_mermaid_url(mermaid_url, output) -> None:
     :param mermaid_url: The URL of the image.
     :param output: A filename specifying the name of the image to be created, the suffix svg/jpg determines the file type of the output image.
     """
+    from urllib.request import Request, urlopen
+
     try:
         req = Request(mermaid_url, headers={'User-Agent': 'Mozilla/5.0'})
         with open(output, 'wb') as fp:
             fp.write(urlopen(req).read())
     except:
-        from jina.logging import default_logger
-        default_logger.error('can not download image, please check your graph and the network connections')
+        from jina.logging.predefined import default_logger
+
+        default_logger.error(
+            'can not download image, please check your graph and the network connections'
+        )
+
+
+def find_request_binding(target):
+    """Find `@request` decorated methods in a class.
+
+    :param target: the target class to check
+    :return: a dictionary with key as request type and value as method name
+    """
+    import ast, inspect
+    from . import __default_endpoint__
+
+    res = {}
+
+    def visit_function_def(node):
+
+        for e in node.decorator_list:
+            req_name = ''
+            if isinstance(e, ast.Call) and e.func.id == 'requests':
+                req_name = e.keywords[0].value.s
+            elif isinstance(e, ast.Name) and e.id == 'requests':
+                req_name = __default_endpoint__
+            if req_name:
+                if req_name in res:
+                    raise ValueError(
+                        f'you already bind `{res[req_name]}` with `{req_name}` request'
+                    )
+                else:
+                    res[req_name] = node.name
+
+    V = ast.NodeVisitor()
+    V.visit_FunctionDef = visit_function_def
+    V.visit(compile(inspect.getsource(target), '?', 'exec', ast.PyCF_ONLY_AST))
+    return res
+
+
+def dunder_get(_dict: Any, key: str) -> Any:
+    """Returns value for a specified dunderkey
+    A "dunderkey" is just a fieldname that may or may not contain
+    double underscores (dunderscores!) for referencing nested keys in
+    a dict. eg::
+         >>> data = {'a': {'b': 1}}
+         >>> dunder_get(data, 'a__b')
+         1
+    key 'b' can be referrenced as 'a__b'
+    :param _dict : (dict, list, struct or object) which we want to index into
+    :param key   : (str) that represents a first level or nested key in the dict
+    :return: (mixed) value corresponding to the key
+    """
+
+    try:
+        part1, part2 = key.split('__', 1)
+    except ValueError:
+        part1, part2 = key, ''
+
+    try:
+        part1 = int(part1)  # parse int parameter
+    except ValueError:
+        pass
+
+    from google.protobuf.struct_pb2 import ListValue
+    from google.protobuf.struct_pb2 import Struct
+    from google.protobuf.pyext._message import MessageMapContainer
+
+    if isinstance(part1, int):
+        result = _dict[part1]
+    elif isinstance(_dict, (Iterable, ListValue)):
+        result = _dict[part1]
+    elif isinstance(_dict, (dict, Struct, MessageMapContainer)):
+        if part1 in _dict:
+            result = _dict[part1]
+        else:
+            result = None
+    else:
+        result = getattr(_dict, part1)
+
+    return dunder_get(result, part2) if part2 else result
+
+
+if False:
+    from fastapi import FastAPI
+
+
+def extend_rest_interface(app: 'FastAPI') -> 'FastAPI':
+    """Extend Jina built-in FastAPI instance with customized APIs, routing, etc.
+
+    :param app: the built-in FastAPI instance given by Jina
+    :return: the extended FastAPI instance
+
+    .. highlight:: python
+    .. code-block:: python
+
+        def extend_rest_interface(app: 'FastAPI'):
+
+            @app.get('/extension1')
+            async def root():
+                return {"message": "Hello World"}
+
+            return app
+    """
+    return app
+
+
+def get_ci_vendor() -> Optional[str]:
+    from jina import __resources_path__
+
+    with open(os.path.join(__resources_path__, 'ci-vendors.json')) as fp:
+        all_cis = json.load(fp)
+        for c in all_cis:
+            if isinstance(c['env'], str) and c['env'] in os.environ:
+                return c['constant']
+            elif isinstance(c['env'], dict):
+                for k, v in c['env'].items():
+                    if os.environ.get(k, None) == v:
+                        return c['constant']
+            elif isinstance(c['env'], list):
+                for k in c['env']:
+                    if k in os.environ:
+                        return c['constant']

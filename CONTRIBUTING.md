@@ -19,7 +19,6 @@ In this guide, we're going to go through the steps for each kind of contribution
 - [☑️ Naming Conventions](#-naming-conventions)
 - [💥 Testing Jina Locally and on CI](#-testing-jina-locally-and-on-ci)
 - [📖 Contributing Documentation](#-contributing-documentation)
-- [💬 Getting Support](#-getting-support)
 - [🙏 Thank You](#-thank-you)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
@@ -33,8 +32,8 @@ Make sure you've read through our [README](https://github.com/jina-ai/jina), [Ji
 
 We're happy for any contributions, code or not. If you'd like to write a blog post, record a podcast, organize a meetup, or anything else to contribute to Jina, we'd love to hear from you!
 
-* [Contribute docs](#contributing-documentation)
-* For other contributions, please [get in touch](#getting-support) to discuss on Slack
+* [Contribute docs](#-contributing-documentation)
+* For other contributions, please [get in touch](#-getting-support) to discuss on Slack
 
 <a name="-bugs-and-issues"></a>
 ## 🐞 Bugs and Issues
@@ -51,7 +50,7 @@ There are also a couple of nice to haves:
 * **Environment:** You can find this with `jina --version-full`
 * **Screenshots:** If they're relevant
 
-To understand how our issues are labeled, check out our [issue label guide](./github_issue_label_guide.md).
+To understand how our issues are labeled, check out our [issue label guide](.github/github-issue-label-guide.md).
 
 ### Fixing and Discussing Issues
 
@@ -65,7 +64,7 @@ Right now we're working on a list of things we want help with and easy-to-fix bu
 ## 🥇 Making Your First Submission
 
 0. Associate your local git config with your github account. If this is your first time using git you can follow [the steps](#associate-with-github-account).
-1. Fork the Jina repo and clone onto your computer. By default, `git` won't clone `jina/hub` as it is a submodule maintained at [`jina-ai/jina-hub`](https://github.com/jina-ai/jina-hub). Please follow [the steps](#check-out-jina-hub-submodule) for details.
+1. Fork the Jina repo and clone onto your computer. 
 1. Configure git pre-commit hooks. Please follow [the steps](#install-pre-commit-hooks)
 1. Create a [new branch](#naming-your-branch), for example `fix-jina-typo-1`.
 1. Work on this branch to do the fix/improvement.
@@ -101,35 +100,21 @@ What happens after the merge? [Understand the development stage and release cycl
 
 ### Install pre-commit hooks
 
-In Jina we use git's pre-commit hooks in order to make sure the code matches our standards of quality and documentation. At the moment we employ them for checking the docstrings of the code. Documentation of code is crucial to maintaining productive developers and clear communication with new users.
+In Jina we use git's pre-commit hooks in order to make sure the code matches our standards of quality and documentation. At the moment we employ them for checking the style and the docstrings of the code. Documentation of code is crucial to maintaining productive developers and clear communication with new users. We also want to reduce all arguments about code styling.
 
 It's easy to configure it:
 
 1. `pip install pre-commit`
 1. `pre-commit install`
 
-Now you will be automatically reminded to add docstrings to your code.
+Now you will be automatically reminded to add docstrings to your code. `black` will take care that your code will match our style. Note that `black` will fail your commit but reformat your code, so you just need to add the files again and commit **again**.
 
 For more about our docstring style, refer to [this guide](https://docs.jina.ai/chapters/docstring/docstring.html).
 
-### Check out `jina/hub` submodule
+#### Restoring correct git blame
 
-By default, `git clone` won't clone anything under `jina/hub` as it is a Git submodule maintained at [`jina-ai/jina-hub`](https://github.com/jina-ai/jina-hub). If you want to contribute to `jina-hub`, please move to [`jina-ai/jina-hub`](https://github.com/jina-ai/jina-hub) repo and make your contribution.
+Run `git config blame.ignoreRevsFile .github/.git-blame-ignore-revs`
 
-In most cases when you work on `jina-ai/jina`, you don't need `jina-hub`. But just in case for some reason you wish to work with files under `jina/hub` (e.g. some integration test), you can use:
-
-```bash
-git clone https://github.com/jina-ai/jina.git
-git submodule update --init --remote
-```
-
-At any time, if you want to sync your local files `jina/hub` with `master@jina-ai/jina-hub`, you can always use:
-
-```bash
-git submodule update --remote
-```
-
-If you are unfamiliar with git submodule, [this blog post from Github nicely explains it](https://github.blog/2016-02-01-working-with-submodules/).  
 
 <a name="-naming-conventions"></a>
 ## ☑️ Naming Conventions
@@ -285,7 +270,7 @@ This covers files like [Jina 101](https://101.jina.ai), [Input and Output Functi
 
 These are typically written in Markdown, though some may be in RestructuredText.
 
-If you're just correcting a typo, feel free to make a pull request. For bigger ones, check out our [getting support section](#getting-support) to get in touch and discuss more.
+If you're just correcting a typo, feel free to make a pull request. For bigger ones, check out our [getting support section](#-getting-support) to get in touch and discuss more.
 
 #### Tutorials and Examples
 
@@ -293,7 +278,7 @@ This is anything under the [Jina Examples](https://github.com/jina-ai/examples) 
 
 If you're submitting a new example, be sure to get a good grounding in Jina, go through our previous examples, and test your code.
 
-If you're making small tweaks to an existing example, make a pull request. For bigger ones, check out our [getting support section](#getting-support) to get in touch and discuss more.
+If you're making small tweaks to an existing example, make a pull request. For bigger ones, check out our [getting support section](#-getting-support) to get in touch and discuss more.
 
 #### Docstrings
 
@@ -311,17 +296,6 @@ python -m http.server 8080 -d _build/html
 
 The documentation is then available in your browser at [`http://0.0.0.0:8080/`](http://0.0.0.0:8080/).
 
-<a name="-getting-support"></a>
-## 💬 Getting Support
-
-We're always happy to lend a hand, answer questions, or listen to feedback. You find us here:
-
-* [Documentation](http://docs.jina.ai)
-* [Slack](https://join.slack.com/t/jina-ai/shared_invite/zt-dkl7x8p0-rVCv~3Fdc3~Dpwx7T7XG8w)
-
-We're also looking at starting online developer hangouts, so you can catch up with us over chat and video, and get to meet your fellow Jina contributors.
-
-<a name="-thank-you"></a>
 ## 🙏 Thank You
 
 Once again, thanks so much for your interest in contributing to Jina. We're excited to see your contributions!

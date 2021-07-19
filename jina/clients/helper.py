@@ -1,16 +1,14 @@
 """Helper functions for clients in Jina."""
-__copyright__ = "Copyright (c) 2020 Jina AI Limited. All rights reserved."
-__license__ = "Apache-2.0"
 
 from functools import wraps
 from typing import Callable
 
-from .. import Response
 from ..excepts import BadClientCallback
 from ..helper import colored
 from ..importer import ImportExtensions
-from ..logging import JinaLogger
+from ..logging.logger import JinaLogger
 from ..proto import jina_pb2
+from ..types.request import Response
 
 
 def pprint_routes(resp: 'Response', stack_limit: int = 3):
@@ -18,7 +16,6 @@ def pprint_routes(resp: 'Response', stack_limit: int = 3):
 
     :param resp: the :class:`Response` object
     :param stack_limit: traceback limit
-    :return:
     """
     from textwrap import fill
 
@@ -28,6 +25,7 @@ def pprint_routes(resp: 'Response', stack_limit: int = 3):
 
     with ImportExtensions(required=False):
         from prettytable import PrettyTable, ALL
+
         table = PrettyTable(field_names=header, align='l', hrules=ALL)
         add_row = table.add_row
         visualize = print
@@ -39,10 +37,18 @@ def pprint_routes(resp: 'Response', stack_limit: int = 3):
         elif route.status.code == jina_pb2.StatusProto.ERROR_CHAINED:
             status_icon = '⚪'
 
-        add_row([f'{status_icon} {route.pod}',
-                 f'{route.start_time.ToMilliseconds() - routes[0].start_time.ToMilliseconds()}ms',
-                 fill(''.join(route.status.exception.stacks[-stack_limit:]), width=50,
-                      break_long_words=False, replace_whitespace=False)])
+        add_row(
+            [
+                f'{status_icon} {route.pod}',
+                f'{route.start_time.ToMilliseconds() - routes[0].start_time.ToMilliseconds()}ms',
+                fill(
+                    ''.join(route.status.exception.stacks[-stack_limit:]),
+                    width=50,
+                    break_long_words=False,
+                    replace_whitespace=False,
+                ),
+            ]
+        )
 
     visualize(table)
 
@@ -62,7 +68,14 @@ def _safe_callback(func: Callable, continue_on_error: bool, logger) -> Callable:
     return _arg_wrapper
 
 
-def callback_exec(response, on_done: Callable, on_error: Callable, on_always: Callable, continue_on_error: bool, logger: JinaLogger) -> None:
+def callback_exec(
+    response,
+    on_done: Callable,
+    on_error: Callable,
+    on_always: Callable,
+    continue_on_error: bool,
+    logger: JinaLogger,
+) -> None:
     """Execute the callback with the response.
 
     :param response: the response

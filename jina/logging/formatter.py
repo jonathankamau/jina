@@ -1,39 +1,41 @@
 import json
+import logging
 import re
 from copy import copy
-from logging import Formatter
+from logging import Formatter, LogRecord
 
-from .profile import used_memory
+from ..enums import LogVerbosity
 from ..helper import colored
-
-if False:
-    from logging import LogRecord
 
 
 class ColorFormatter(Formatter):
     """Format the log into colored logs based on the log-level."""
 
     MAPPING = {
-        'DEBUG': dict(color='white', on_color=None),  # white
-        'INFO': dict(color='white', on_color=None),  # cyan
-        'WARNING': dict(color='yellow', on_color='on_grey'),  # yellow
-        'ERROR': dict(color='red', on_color=None),  # 31 for red
-        'CRITICAL': dict(color='white', on_color='on_red'),  # white on red bg
-        'SUCCESS': dict(color='green', on_color=None),  # white on red bg
+        LogVerbosity.DEBUG: dict(color='magenta'),
+        LogVerbosity.INFO: dict(),  # plain
+        LogVerbosity.SUCCESS: dict(color='green'),
+        LogVerbosity.WARNING: dict(color='yellow'),
+        LogVerbosity.ERROR: dict(color='red'),
+        LogVerbosity.CRITICAL: dict(color='red', attrs=['bold']),
     }  #: log-level to color mapping
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.formatters = {
+            k: logging.Formatter(colored(self._fmt, **v))
+            for k, v in self.MAPPING.items()
+        }
 
     def format(self, record):
         """
         Format the LogRecord with corresponding colour.
 
         :param record: A LogRecord object
-        :returns: Formatted LogRecord with level-colour MAPPING to add corresponding colour.
+        :return:: Formatted LogRecord with level-colour MAPPING to add corresponding colour.
         """
-        cr = copy(record)
-        if cr.levelname != 'INFO':
-            seq = self.MAPPING.get(cr.levelname, self.MAPPING['INFO'])  # default white
-            cr.msg = colored(cr.msg, **seq)
-        return super().format(cr)
+        formatter = self.formatters.get(record.levelno)
+        return formatter.format(record)
 
 
 class PlainFormatter(Formatter):
@@ -44,7 +46,7 @@ class PlainFormatter(Formatter):
         Format the LogRecord by removing all control chars and plain text, and restrict the max-length of msg to 512.
 
         :param record: A LogRecord object.
-        :returns: Formatted plain LogRecord.
+        :return:: Formatted plain LogRecord.
         """
         cr = copy(record)
         if isinstance(cr.msg, str):
@@ -55,22 +57,35 @@ class PlainFormatter(Formatter):
 class JsonFormatter(Formatter):
     """Format the log message as a JSON object so that it can be later used/parsed in browser with javascript."""
 
-    KEYS = {'created', 'filename', 'funcName', 'levelname', 'lineno', 'msg',
-            'module', 'name', 'pathname', 'process', 'thread', 'processName',
-            'threadName', 'log_id'}  #: keys to extract from the log
+    KEYS = {
+        'created',
+        'filename',
+        'funcName',
+        'levelname',
+        'lineno',
+        'msg',
+        'module',
+        'name',
+        'pathname',
+        'process',
+        'thread',
+        'processName',
+        'threadName',
+        'log_id',
+    }  #: keys to extract from the log
 
     def format(self, record: 'LogRecord'):
         """
         Format the log message as a JSON object.
 
         :param record: A LogRecord object.
-        :returns: LogRecord with JSON format.
+        :return:: LogRecord with JSON format.
         """
         cr = copy(record)
         cr.msg = re.sub(r'\u001b\[.*?[@-~]', '', str(cr.msg))
         return json.dumps(
-            {k: getattr(cr, k) for k in self.KEYS if hasattr(cr, k)},
-            sort_keys=True)
+            {k: getattr(cr, k) for k in self.KEYS if hasattr(cr, k)}, sort_keys=True
+        )
 
 
 class ProfileFormatter(Formatter):
@@ -81,11 +96,15 @@ class ProfileFormatter(Formatter):
         Format the log message as JSON object and add the current used memory.
 
         :param record: A LogRecord object.
-        :returns: Return JSON formatted log if msg of LogRecord is dict type else return empty.
+        :return:: Return JSON formatted log if msg of LogRecord is dict type else return empty.
         """
+        from .profile import used_memory
+
         cr = copy(record)
         if isinstance(cr.msg, dict):
-            cr.msg.update({k: getattr(cr, k) for k in ['created', 'module', 'process', 'thread']})
+            cr.msg.update(
+                {k: getattr(cr, k) for k in ['created', 'module', 'process', 'thread']}
+            )
             cr.msg['memory'] = used_memory(unit=1)
             return json.dumps(cr.msg, sort_keys=True)
         else:

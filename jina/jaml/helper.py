@@ -11,9 +11,9 @@ from yaml.reader import Reader
 from yaml.resolver import Resolver
 from yaml.scanner import Scanner
 
-from jina.excepts import BadConfigSource
-from jina.helper import is_yaml_filepath
-from jina.importer import PathImporter
+from ..excepts import BadConfigSource
+from ..helper import is_yaml_filepath
+from ..importer import PathImporter
 
 
 class JinaConstructor(FullConstructor):
@@ -52,9 +52,12 @@ class JinaConstructor(FullConstructor):
 
     def _construct_mapping(self, node, deep=True):
         if not isinstance(node, MappingNode):
-            raise ConstructorError(None, None,
-                                   'expected a mapping node, but found %s' % node.id,
-                                   node.start_mark)
+            raise ConstructorError(
+                None,
+                None,
+                'expected a mapping node, but found %s' % node.id,
+                node.start_mark,
+            )
         mapping = {}
         for key_node, value_node in node.value:
             key = self.construct_object(key_node, deep=True)
@@ -62,8 +65,12 @@ class JinaConstructor(FullConstructor):
                 try:
                     key = self.get_hashable_key(key)
                 except Exception as exc:
-                    raise ConstructorError('while constructing a mapping', node.start_mark,
-                                           'found unacceptable key (%s)' % exc, key_node.start_mark)
+                    raise ConstructorError(
+                        'while constructing a mapping',
+                        node.start_mark,
+                        'found unacceptable key (%s)' % exc,
+                        key_node.start_mark,
+                    )
             value = self.construct_object(value_node, deep=deep)
 
             mapping[key] = value
@@ -92,22 +99,22 @@ class JinaLoader(Reader, Scanner, Parser, Composer, JinaConstructor, JinaResolve
         JinaResolver.__init__(self)
 
 
-
 # remove on|On|ON resolver
 JinaResolver.yaml_implicit_resolvers.pop('o')
 JinaResolver.yaml_implicit_resolvers.pop('O')
 
 
-def parse_config_source(path: Union[str, TextIO, Dict],
-                        allow_stream: bool = True,
-                        allow_yaml_file: bool = True,
-                        allow_builtin_resource: bool = True,
-                        allow_raw_yaml_content: bool = True,
-                        allow_raw_driver_yaml_content: bool = True,
-                        allow_class_type: bool = True,
-                        allow_dict: bool = True,
-                        allow_json: bool = True,
-                        *args, **kwargs) -> Tuple[TextIO, Optional[str]]:
+def parse_config_source(
+    path: Union[str, TextIO, Dict],
+    allow_stream: bool = True,
+    allow_yaml_file: bool = True,
+    allow_raw_yaml_content: bool = True,
+    allow_class_type: bool = True,
+    allow_dict: bool = True,
+    allow_json: bool = True,
+    *args,
+    **kwargs,
+) -> Tuple[TextIO, Optional[str]]:
     """
     Check if the text or text stream is valid.
 
@@ -115,23 +122,22 @@ def parse_config_source(path: Union[str, TextIO, Dict],
     :param path: the multi-kind source of the configs.
     :param allow_stream: flag
     :param allow_yaml_file: flag
-    :param allow_builtin_resource: flag
     :param allow_raw_yaml_content: flag
-    :param allow_raw_driver_yaml_content: flag
     :param allow_class_type: flag
     :param allow_dict: flag
     :param allow_json: flag
-    :param *args: *args
-    :param **kwargs: **kwargs
+    :param args: unused
+    :param kwargs: unused
     :return: a tuple, the first element is the text stream, the second element is the file path associate to it
             if available.
     """
     import io
-    from pkg_resources import resource_filename
+
     if not path:
         raise BadConfigSource
     elif allow_dict and isinstance(path, dict):
         from . import JAML
+
         tmp = JAML.dump(path)
         return io.StringIO(tmp), None
     elif allow_stream and hasattr(path, 'read'):
@@ -140,23 +146,9 @@ def parse_config_source(path: Union[str, TextIO, Dict],
     elif allow_yaml_file and is_yaml_filepath(path):
         comp_path = complete_path(path)
         return open(comp_path, encoding='utf8'), comp_path
-    elif allow_builtin_resource and path.lstrip().startswith('_') and os.path.exists(
-            resource_filename('jina', '/'.join(('resources', f'executors.{path}.yml')))):
-        # NOTE: this returns a binary stream
-        comp_path = resource_filename('jina', '/'.join(('resources', f'executors.{path}.yml')))
-        return open(comp_path, encoding='utf8'), comp_path
-    elif allow_raw_yaml_content and path.lstrip().startswith('!'):
+    elif allow_raw_yaml_content and path.lstrip().startswith(('!', 'jtype')):
         # possible YAML content
         path = path.replace('|', '\n    with: ')
-        return io.StringIO(path), None
-    elif allow_raw_driver_yaml_content and path.lstrip().startswith('- !'):
-        # possible driver YAML content, right now it is only used for debugging
-        with open(resource_filename('jina', '/'.join(
-                ('resources',
-                 'executors.base.all.yml' if path.lstrip().startswith('- !!') else 'executors.base.yml')))) as fp:
-            _defaults = fp.read()
-        path = path.replace('- !!', '- !').replace('|', '\n        with: ')  # for indent, I know, its nasty
-        path = _defaults.replace('*', path)
         return io.StringIO(path), None
     elif allow_class_type and path.isidentifier():
         # possible class name
@@ -164,14 +156,17 @@ def parse_config_source(path: Union[str, TextIO, Dict],
     elif allow_json and isinstance(path, str):
         try:
             from . import JAML
+
             tmp = json.loads(path)
             tmp = JAML.dump(tmp)
             return io.StringIO(tmp), None
         except json.JSONDecodeError:
             raise BadConfigSource(path)
     else:
-        raise BadConfigSource(f'{path} can not be resolved, it should be a readable stream,'
-                              ' or a valid file path, or a supported class name.')
+        raise BadConfigSource(
+            f'{path} can not be resolved, it should be a readable stream,'
+            ' or a valid file path, or a supported class name.'
+        )
 
 
 def complete_path(path: str, extra_search_paths: Optional[Tuple[str]] = None) -> str:
@@ -182,12 +177,10 @@ def complete_path(path: str, extra_search_paths: Optional[Tuple[str]] = None) ->
     :param extra_search_paths: extra paths to conduct search
     :return: Completed file path.
     """
-    _p = None
-    if os.path.exists(path):
+    _p = _search_file_in_paths(path, extra_search_paths)
+    if _p is None and os.path.exists(path):
         # this checks both abs and relative paths already
         _p = path
-    else:
-        _p = _search_file_in_paths(path, extra_search_paths)
     if _p:
         return os.path.abspath(_p)
     else:
@@ -203,6 +196,7 @@ def _search_file_in_paths(path, extra_search_paths: Optional[Tuple[str]] = None)
     :return: the path (if found)
     """
     import inspect
+
     search_paths = []
     if extra_search_paths:
         search_paths.extend((v for v in extra_search_paths))
