@@ -2,18 +2,14 @@ import os
 
 import pytest
 import yaml
-from pkg_resources import resource_filename
 
-from jina.enums import SocketType
-from jina.executors import BaseExecutor
-from jina.executors.compound import CompoundExecutor
-from jina.executors.indexers.vector import NumpyIndexer
-from jina.executors.metas import fill_metas_with_defaults
-from jina.helper import expand_dict
-from jina.helper import expand_env_var
+from jina import Deployment
+from jina.constants import __default_executor__
+from jina.helper import expand_dict, expand_env_var
 from jina.jaml import JAML
-from jina.parsers import set_pea_parser
-from jina.peapods.peas import BasePea
+from jina.serve.executors import BaseExecutor
+from jina.serve.runtimes.gateway.gateway import BaseGateway
+from jina.serve.runtimes.gateway.http import HTTPGateway
 
 cur_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -27,7 +23,7 @@ def test_workspace(tmpdir):
 
 
 def test_yaml_expand():
-    with open(os.path.join(cur_dir, 'yaml/test-expand.yml')) as fp:
+    with open(os.path.join(cur_dir, 'yaml/test-expand.yml'), encoding='utf-8') as fp:
         a = JAML.load(fp)
     b = expand_dict(a)
     assert b['quote_dict'] == {}
@@ -41,7 +37,7 @@ def test_yaml_expand():
 
 
 def test_yaml_expand2():
-    with open(os.path.join(cur_dir, 'yaml/test-expand2.yml')) as fp:
+    with open(os.path.join(cur_dir, 'yaml/test-expand2.yml'), encoding='utf-8') as fp:
         a = JAML.load(fp)
     os.environ['ENV1'] = 'a'
     b = expand_dict(a)
@@ -54,7 +50,7 @@ def test_yaml_expand2():
 
 
 def test_yaml_expand3():
-    with open(os.path.join(cur_dir, 'yaml/test-expand3.yml')) as fp:
+    with open(os.path.join(cur_dir, 'yaml/test-expand3.yml'), encoding='utf-8') as fp:
         a = JAML.load(fp)
 
     b = expand_dict(a)
@@ -63,10 +59,14 @@ def test_yaml_expand3():
 
 def test_yaml_expand4():
     os.environ['ENV1'] = 'a'
-    with open(os.path.join(cur_dir, 'yaml/test-expand4.yml')) as fp:
-        b = JAML.load(fp, substitute=True,
-                      context={'context_var': 3.14,
-                               'context_var2': 'hello-world'})
+    os.environ['ENV2'] = '{"1": "2"}'
+
+    with open(os.path.join(cur_dir, 'yaml/test-expand4.yml'), encoding='utf-8') as fp:
+        b = JAML.load(
+            fp,
+            substitute=True,
+            context={'context_var': 3.14, 'context_var2': 'hello-world'},
+        )
 
     assert b['components'][0]['metas']['bad_var'] == 'real-compound'
     assert b['components'][1]['metas']['bad_var'] == 2
@@ -76,6 +76,9 @@ def test_yaml_expand4():
     assert b['components'][1]['metas']['mixed_env'] == '0.232-a'
     assert b['components'][1]['metas']['random_id'] == 3.14
     assert b['components'][1]['metas']['config_str'] == 'hello-world'
+    assert b['components'][1]['metas']['bracket_env'] == '{"1": "2"}'
+    assert b['components'][1]['metas']['bracket_env'] == '{"1": "2"}'
+    assert b['components'][1]['metas']['context_dot'] == 3.14
 
 
 def test_attr_dict():
@@ -89,12 +92,6 @@ def test_attr_dict():
     assert isinstance(a.components, list)
 
 
-def test_yaml_fill():
-    with open(os.path.join(cur_dir, 'yaml/test-expand2.yml')) as fp:
-        a = JAML.load(fp)
-    print(fill_metas_with_defaults(a))
-
-
 def test_class_yaml():
     class DummyClass:
         pass
@@ -103,42 +100,6 @@ def test_class_yaml():
 
     a = JAML.load('!DummyClass {}')
     assert type(a) == DummyClass
-
-
-def test_class_yaml2():
-    with open(resource_filename('jina',
-                                '/'.join(('resources', 'executors.requests.BaseExecutor.yml')))) as fp:
-        JAML.load(fp)
-
-
-def test_class_yaml3():
-    args = set_pea_parser().parse_args([])
-
-    with BasePea(args):
-        pass
-
-    from jina.executors.requests import _defaults
-    assert _defaults is not None
-
-
-def test_joint_indexer(test_workspace):
-    b = BaseExecutor.load_config(os.path.join(cur_dir, 'yaml/test-joint.yml'))
-    b.attach(runtime=None)
-    assert b._drivers['SearchRequest'][0]._exec == b[0]
-    assert b._drivers['SearchRequest'][-1]._exec == b[1]
-
-
-@pytest.mark.parametrize(
-    'yaml_dir, executor',
-    [
-        ('yaml/dummy_exec1.yml', BaseExecutor),
-        ('yaml/dummy_exec2.yml', NumpyIndexer)
-    ]
-)
-def test_load_yaml(yaml_dir, executor, tmpdir):
-    with executor.load_config(yaml_dir) as e:
-        e.save(tmpdir.join(e.save_abspath))
-        e.save_config(tmpdir.join(e.config_abspath))
 
 
 def test_load_external_fail():
@@ -155,29 +116,24 @@ def test_expand_env():
     assert expand_env_var('$PATH-${AA}') != '$PATH-${AA}'
 
 
-def test_enum_yaml():
-    assert JAML.load(JAML.dump(SocketType.PAIR_BIND)) == 'PAIR_BIND'
-
-
 def test_encoder_name_env_replace():
     os.environ['BE_TEST_NAME'] = 'hello123'
-    os.environ['BATCH_SIZE'] = '256'
     with BaseExecutor.load_config('yaml/test-encoder-env.yml') as be:
-        assert be.name == 'hello123'
-        assert be.batch_size == 256
+        assert be.metas.name == 'hello123'
 
 
 def test_encoder_name_dict_replace():
-    d = {'BE_TEST_NAME': 'hello123', 'BATCH_SIZE': 256}
+    d = {'BE_TEST_NAME': 'hello123'}
     with BaseExecutor.load_config('yaml/test-encoder-env.yml', context=d) as be:
-        assert be.name == 'hello123'
-        assert be.batch_size == 256
-        assert be.workspace == 'hello123-256'
+        assert be.metas.name == 'hello123'
+        assert be.metas.workspace == 'hello123'
 
 
 def test_encoder_inject_config_via_kwargs():
-    with BaseExecutor.load_config('yaml/test-encoder-env.yml', pea_id=345) as be:
-        assert be.pea_id == 345
+    with BaseExecutor.load_config(
+        'yaml/test-encoder-env.yml', metas={'shard_id': 345}
+    ) as be:
+        assert be.metas.shard_id == 345
 
 
 def test_load_from_dict():
@@ -185,15 +141,15 @@ def test_load_from_dict():
     # metas:
     #   name: ${{BE_TEST_NAME}}
     #   batch_size: ${{BATCH_SIZE}}
-    #   pea_id: ${{pea_id}}
+    #   pod_id: ${{pod_id}}
     #   workspace: ${{this.name}}-${{this.batch_size}}
 
     d1 = {
-        'jtype': 'BaseEncoder',
-        'metas': {'name': '${{BE_TEST_NAME}}',
-                  'batch_size': '${{BATCH_SIZE}}',
-                  'pea_id': '${{pea_id}}',
-                  'workspace': '${{this.name}} -${{this.batch_size}}'}
+        'jtype': __default_executor__,
+        'metas': {
+            'name': '${{ BE_TEST_NAME }}',
+            'workspace': '${{this.name}}',
+        },
     }
 
     # !CompoundExecutor
@@ -210,27 +166,83 @@ def test_load_from_dict():
     #       name: test2
     # metas:
     #   name: compound1
-
-    d2 = {
-        'jtype': 'CompoundExecutor',
-        'components':
-            [
-                {
-                    'jtype': 'BinaryPbIndexer',
-                    'with': {'index_filename': 'tmp1'},
-                    'metas': {'name': 'test1'}
-                },
-                {
-                    'jtype': 'BinaryPbIndexer',
-                    'with': {'index_filename': 'tmp2'},
-                    'metas': {'name': 'test2'}
-                },
-            ]
-    }
-    d = {'BE_TEST_NAME': 'hello123', 'BATCH_SIZE': 256}
+    d = {'BE_TEST_NAME': 'hello123'}
     b1 = BaseExecutor.load_config(d1, context=d)
-    b2 = BaseExecutor.load_config(d2, context=d)
     assert isinstance(b1, BaseExecutor)
-    assert isinstance(b2, CompoundExecutor)
-    assert b1.batch_size == 256
-    assert b1.name == 'hello123'
+
+    assert b1.metas.name == 'hello123'
+
+
+@pytest.mark.parametrize(
+    'yaml_file,gateway_name',
+    [
+        ('test-custom-gateway.yml', 'DummyGateway'),
+        ('test-fastapi-gateway.yml', 'DummyFastAPIGateway'),
+    ],
+)
+def test_load_gateway_external_success(yaml_file, gateway_name):
+    with BaseGateway.load_config(
+        f'yaml/{yaml_file}', runtime_args={'port': [12345]}
+    ) as gateway:
+        assert gateway.__class__.__name__ == gateway_name
+        assert gateway.arg1 == 'hello'
+        assert gateway.arg2 == 'world'
+        assert gateway.arg3 == 'default-arg3'
+        assert gateway.runtime_args.timeout_send == 10
+        assert gateway.runtime_args.retries == 10
+        assert gateway.runtime_args.compression == 'Deflate'
+        assert gateway.runtime_args.prefetch == 100
+
+
+def test_load_http_gateway_success():
+    gateway: HTTPGateway = HTTPGateway.load_config(
+        f'yaml/test-http-gateway.yml', runtime_args={'port': [12345]}
+    )
+    with gateway:
+        assert isinstance(gateway, HTTPGateway)
+        assert gateway.cors is True
+        assert gateway.title == 'my-gateway-title'
+        assert gateway.description == 'my-gateway-description'
+
+
+@pytest.mark.parametrize(
+    'yaml_file,gateway_name',
+    [
+        ('test-custom-gateway.yml', 'DummyGateway'),
+        ('test-fastapi-gateway.yml', 'DummyFastAPIGateway'),
+    ],
+)
+def test_load_gateway_override_with(yaml_file, gateway_name):
+    with BaseGateway.load_config(
+        f'yaml/{yaml_file}',
+        uses_with={'arg1': 'arg1', 'arg2': 'arg2', 'arg3': 'arg3'},
+        runtime_args={'port': [12345]},
+    ) as gateway:
+        assert gateway.__class__.__name__ == gateway_name
+        assert gateway.arg1 == 'arg1'
+        assert gateway.arg2 == 'arg2'
+        assert gateway.arg3 == 'arg3'
+
+
+@pytest.mark.parametrize(
+    'yaml_file,expected_replicas,expected_shards,expected_uses,grpc_options',
+    [
+        (
+            'test-deployment.yml',
+            2,
+            3,
+            'DummyExternalIndexer',
+            {'grpc.max_send_message_length': -1},
+        ),
+        ('test-deployment-exec-config.yml', 3, 2, 'dummy_ext_exec_success.yml', None),
+    ],
+)
+def test_load_deployment(
+    yaml_file, expected_replicas, expected_shards, expected_uses, grpc_options
+):
+    with Deployment.load_config(os.path.join(cur_dir, f'yaml/{yaml_file}')) as dep:
+        assert dep.args.replicas == expected_replicas
+        assert dep.args.shards == expected_shards
+        assert dep.args.uses == expected_uses
+        assert dep.args.grpc_server_options == grpc_options
+        assert dep.args.grpc_channel_options == grpc_options

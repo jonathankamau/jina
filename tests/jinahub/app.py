@@ -1,7 +1,7 @@
-__copyright__ = "Copyright (c) 2020 Jina AI Limited. All rights reserved."
-__license__ = "Apache-2.0"
+from jina import Flow
+import os
 
-from jina.flow import Flow
+os.environ['JINA_LOG_LEVEL'] = 'DEBUG'
 
 if __name__ == '__main__':
     with Flow.load_config('flow.yml') as f:

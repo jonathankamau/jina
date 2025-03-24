@@ -1,72 +1,93 @@
 """Module for helper functions for clients."""
-from typing import Tuple, Sequence
 
-from ... import Document, Request
-from ...enums import DataInputType, RequestType
-from ...excepts import BadDocType, BadRequestType
+from typing import Optional, Tuple
+
+from jina._docarray import Document, DocumentArray, docarray_v2
+from jina.enums import DataInputType
+from jina.types.request.data import DataRequest
+
+if docarray_v2:
+    from docarray import DocList, BaseDoc
 
 
-def _new_doc_from_data(data, data_type: DataInputType, **kwargs) -> Tuple['Document', 'DataInputType']:
+def _new_data_request_from_batch(
+    batch,
+    data_type: DataInputType,
+    endpoint: str,
+    target: Optional[str],
+    parameters: Optional[dict],
+) -> DataRequest:
+    req = _new_data_request(endpoint, target, parameters)
+
+    # add docs fields
+    _add_docs(req, batch, data_type)
+
+    return req
+
+
+def _new_data_request(
+    endpoint: str, target: Optional[str], parameters: Optional[dict]
+) -> DataRequest:
+    req = DataRequest()
+
+    # set up header
+    req.header.exec_endpoint = endpoint
+    if target:
+        req.header.target_executor = target
+    # add parameters field
+    if parameters:
+        req.parameters = parameters
+    return req
+
+
+def _new_doc_from_data(
+    data, data_type: DataInputType
+) -> Tuple['Document', 'DataInputType']:
     def _build_doc_from_content():
-        with Document(**kwargs) as d:
-            d.content = data
-        return d, DataInputType.CONTENT
+        return Document(content=data), DataInputType.CONTENT
 
+    if data_type == DataInputType.DICT:
+        return (
+            (Document(**data), DataInputType.DICT)
+            if docarray_v2
+            else (Document.from_dict(data), DataInputType.DICT)
+        )
     if data_type == DataInputType.AUTO or data_type == DataInputType.DOCUMENT:
         if isinstance(data, Document):
             # if incoming is already primitive type Document, then all good, best practice!
             return data, DataInputType.DOCUMENT
-        try:
-            d = Document(data, **kwargs)
-            return d, DataInputType.DOCUMENT
-        except BadDocType:
-            # AUTO has a fallback, now reconsider it as content
-            if data_type == DataInputType.AUTO:
-                return _build_doc_from_content()
-            else:
-                raise
+        elif isinstance(data, dict):
+            return (
+                (Document(**data), DataInputType.DICT)
+                if docarray_v2
+                else (Document.from_dict(data), DataInputType.DICT)
+            )
+        else:
+            try:
+                d = Document(data)
+                return d, DataInputType.DOCUMENT  # NOT HIT
+            except ValueError:
+                # AUTO has a fallback, now reconsider it as content
+                if data_type == DataInputType.AUTO:
+                    return _build_doc_from_content()
+                else:
+                    raise
+
     elif data_type == DataInputType.CONTENT:
         return _build_doc_from_content()
 
 
-def _new_request_from_batch(_kwargs, batch, data_type, mode, queryset):
-    req = Request()
-    req.request_type = str(mode)
-
-    try:
-        # add type-specific fields
-        if mode == RequestType.INDEX or mode == RequestType.SEARCH or mode == RequestType.TRAIN or mode == RequestType.UPDATE:
-            _add_docs_groundtruths(req, batch, data_type, _kwargs)
-        elif mode == RequestType.DELETE:
-            _add_ids(req, batch)
+def _add_docs(req: DataRequest, batch, data_type: DataInputType) -> None:
+    if not docarray_v2:
+        da = DocumentArray([])
+    else:
+        if len(batch) > 0:
+            da = DocList[batch[0].__class__]()
         else:
-            raise NotImplementedError(f'generating request from {mode} is not yet supported')
-    except Exception as ex:
-        raise BadRequestType(f'error when building {req.request_type} from {batch}') from ex
+            da = DocList[BaseDoc]()
 
-    # add common fields
-    if isinstance(queryset, Sequence):
-        req.queryset.extend(queryset)
-    elif queryset is not None:
-        req.queryset.append(queryset)
-    return req
-
-
-def _add_docs_groundtruths(req, batch, data_type, _kwargs):
     for content in batch:
-        if isinstance(content, tuple) and len(content) == 2:
-            # content comes in pair,  will take the first as the input and the second as the ground truth
-
-            # note how data_type is cached
-            d, data_type = _new_doc_from_data(content[0], data_type, **_kwargs)
-            gt, _ = _new_doc_from_data(content[1], data_type, **_kwargs)
-            req.docs.append(d)
-            req.groundtruths.append(gt)
-        else:
-            d, data_type = _new_doc_from_data(content, data_type, **_kwargs)
-            req.docs.append(d)
-
-
-def _add_ids(req, batch):
-    string_ids = (str(doc_id) for doc_id in batch)
-    req.ids.extend(string_ids)
+        d, data_type = _new_doc_from_data(content, data_type)
+        da.append(d)
+    req.document_array_cls = da.__class__
+    req.data.docs = da

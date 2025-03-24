@@ -1,41 +1,89 @@
 """Module for argparse for Client"""
-from .helper import add_arg_group
-from ..enums import RequestType
 
 
-def mixin_client_cli_parser(parser):
+def mixin_client_protocol_parser(parser):
+    """Add the arguments for the protocol to the client parser
+
+    :param parser: the parser configure
+    """
+
+    from jina.enums import ProtocolType
+
+    parser.add_argument(
+        '--protocol',
+        type=ProtocolType.from_string,
+        choices=list(ProtocolType),
+        default=ProtocolType.GRPC,
+        help='Communication protocol between server and client.',
+    )
+
+
+def mixin_client_features_parser(parser):
     """Add the arguments for the client to the parser
 
     :param parser: the parser configure
     """
-    gp = add_arg_group(parser, title='Client')
 
-    gp.add_argument('--request-size', type=int, default=100,
-                    help='The number of Documents in each Request.')
+    parser.add_argument(
+        '--asyncio',
+        action='store_true',
+        default=False,
+        help='If set, then the input and output of this Client work in an asynchronous manner. ',
+    )
 
-    gp.add_argument('--mode', choices=list(RequestType), type=RequestType.from_string,
-                    # required=True,
-                    help='''
-The Request mode. This applies to all Requests sent from this client.
+    parser.add_argument(
+        '--tracing',
+        action='store_true',
+        default=False,
+        help='If set, the sdk implementation of the OpenTelemetry tracer will be available and will be enabled for automatic tracing of requests and customer span creation. '
+        'Otherwise a no-op implementation will be provided.',
+    )
 
-- INDEX: store new Documents into the system
-- SEARCH: query Documents from an indexed system
-- UPDATE: update existing Documents in an indexed system
-- DELETE: delete existing Documents from an indexed system
-- CONTROL: (advance) control Pea/Pod such as shutdown, status
-- TRAIN: (experimental) train the system
-                    ''')
-    gp.add_argument('--top-k', type=int,
-                    help='The number of results will be returned. Sorted by their scores descendingly.')
-    gp.add_argument('--mime-type', type=str,
-                    help='MIME type of the input Documents.')
-    gp.add_argument('--continue-on-error', action='store_true', default=False,
-                    help='If set, a Request that causes error will be logged only without blocking the further '
-                         'requests.')
-    gp.add_argument('--return-results', action='store_true', default=False,
-                    help='''
-This feature is only used for AsyncClient.
+    parser.add_argument(
+        '--traces-exporter-host',
+        type=str,
+        default=None,
+        help='If tracing is enabled, this hostname will be used to configure the trace exporter agent.',
+    )
 
-If set, the results of all Requests will be returned as a list. This is useful when one wants 
-process Responses in bulk instead of using callback. 
-                    ''')
+    parser.add_argument(
+        '--traces-exporter-port',
+        type=int,
+        default=None,
+        help='If tracing is enabled, this port will be used to configure the trace exporter agent.',
+    )
+
+    parser.add_argument(
+        '--metrics',
+        action='store_true',
+        default=False,
+        help='If set, the sdk implementation of the OpenTelemetry metrics will be available for default monitoring and custom measurements. '
+        'Otherwise a no-op implementation will be provided.',
+    )
+
+    parser.add_argument(
+        '--metrics-exporter-host',
+        type=str,
+        default=None,
+        help='If tracing is enabled, this hostname will be used to configure the metrics exporter agent.',
+    )
+
+    parser.add_argument(
+        '--metrics-exporter-port',
+        type=int,
+        default=None,
+        help='If tracing is enabled, this port will be used to configure the metrics exporter agent.',
+    )
+
+    parser.add_argument(
+        '--log-config',
+        type=str,
+        default='default',
+        help='The config name or the absolute path to the YAML config file of the logger used in this object.',
+    )
+    parser.add_argument(
+        '--reuse-session',
+        action='store_true',
+        default=False,
+        help='True if HTTPClient should reuse ClientSession. If true, user will be responsible to close it',
+    )

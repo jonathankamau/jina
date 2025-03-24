@@ -1,76 +1,88 @@
+# JINA PACKAGE DEPENDENCIES
+#
+# Essential: only 5, they are labeled with `core`: docarray, numpy, grpcio, protobuf, pyyaml. They will be installed
+#           when you do `pip install jina`. They are essential to run 90% features & functionalities of Jina.
+# Extensions: they are labeled with different tags. They will NOT be installed by default. One can install a group of
+#           of dependencies labeled `tag` by `pip install "jina[tag]"`
+#
+# FILE FORMAT
 # https://hanxiao.io/2019/11/07/A-Better-Practice-for-Managing-extras-require-Dependencies-in-Python/
-# FORMAT
 # Put your extra requirements here in the following format
 #
 # package[version]: tag1, tag2, ...
 #
-# AVAILABLE TAGS
-#
-# nlp, cv, audio, numeric, index, http, sse, framework, perf, network
 #
 # REMARKS ON TAGS
 # 1. Try to reuse the existing tags if possible.
 #    If you intend to create a new tag, keep it alphabetical, short and general
 # 2. Package name itself is a tag already, so you don't need to tag it again.
-#    For example, 'flair>=0.4.1: flair' is redundant
+#    For example, 'numpy>=0.4.1: numpy' is redundant
 # 3. Tag order doesn't matter; case-sensitive; duplicated tag will be ignored
 # 4. Tag `all` is reserved for representing all packages
 
-scipy>=1.4.1:               index, numeric, cicd
-fastapi:                    devel, cicd, http, test, daemon, chatbot, multimodal
-uvicorn>=0.12.1:            devel, cicd, http, test, daemon, chatbot, multimodal
-fluent-logger:              logging, http, sse, dashboard, devel, cicd, daemon
-nmslib>=1.6.3:              index
-docker:                     devel, cicd, network, hub, daemon
-torch>=1.1.0:               framework, cicd, chatbot, multimodal
-transformers>=2.6.0:        nlp, cicd, chatbot, multimodal
-flair:                      nlp
-paddlepaddle:               framework, py37
-paddlehub:                  framework, py37
-tensorflow>=2.0:            framework, cicd
-tensorflow-hub:             framework, py37
-torchvision>=0.3.0:         framework, cv, multimodal, cicd
-onnx:                       framework, py37
-onnxruntime:                framework, py37
-Pillow:                     cv, cicd, multimodal
-annoy>=1.9.5:               index
-sklearn:                    numeric
-plyvel:                     index
-jieba:                      nlp
-lz4<3.1.2:                  devel, cicd, perf, network
-gevent:                     http, devel, cicd
-python-magic:               http, devel, cicd
-pymilvus:                   index
-deepsegment:                nlp
-ngt:                        index, py37
-librosa>=0.7.2:             audio
-uvloop:                     devel, cicd, perf
+# AVAILABLE TAGS:
+# core < perf < standard < devel: these tags correspond to Docker image tag
+# test: required for **setting up test ENVIRONMENT**
+
+
 numpy:                      core
-pyzmq>=17.1.0:              core
-protobuf>=3.13.0:           core
-grpcio>=1.33.1:             core
+protobuf>=3.19.0:           core
+grpcio>=1.46.0,<=1.68.0:    core
+grpcio-reflection>=1.46.0,<=1.68.0:  core
+grpcio-health-checking>=1.46.0,<=1.68.0:  core
 pyyaml>=5.3.1:              core
-tornado>=5.1.0:             core
-cookiecutter:               hub, devel, cicd
-pytest:                     test
-pytest-xdist==1.34.0:       test
+packaging>=20.0:            core
+docarray>=0.16.4:           core
+jina-hubble-sdk>=0.30.4:    core
+jcloud>=0.0.35:             core
+opentelemetry-api>=1.12.0:  core
+opentelemetry-instrumentation-grpc>=0.35b0:  core 
+uvloop:                     perf,standard,devel
+prometheus_client>=0.12.0:  perf,standard,devel
+opentelemetry-sdk>=1.14.0:  perf,standard,devel
+opentelemetry-exporter-otlp>=1.12.0:  perf,standard,devel
+opentelemetry-exporter-prometheus>=0.33b0:  perf,standard,devel
+opentelemetry-instrumentation-aiohttp-client>=0.33b0:    perf,standard,devel
+opentelemetry-instrumentation-fastapi>=0.33b0: perf,standard,devel
+opentelemetry-exporter-otlp-proto-grpc>=1.13.0: perf,standrad,devel
+fastapi>=0.76.0:            standard,devel
+uvicorn<=0.23.1:            standard,devel
+docker:                     standard,devel
+pathspec:                   standard,devel
+filelock:                   standard,devel
+requests:                   standard,devel
+websockets:                 standard,devel
+pydantic<3.0.0:             core
+python-multipart:           standard,devel
+aiofiles:                   standard,devel
+aiohttp:                    standard,devel
+scipy>=1.6.1:               test
+Pillow:                     test
+pytest<8.0.0:               test
 pytest-timeout:             test
 pytest-mock:                test
-pytest-cov:                 test
+pytest-cov==3.0.0:          test
+coverage==6.2:              test
 pytest-repeat:              test
-pytest-asyncio:             test
+pytest-asyncio<0.23.0:      test
+pytest-reraise:             test
 flaky:                      test
 mock:                       test
-requests:                   http, devel, cicd, daemon
-prettytable:                devel, cicd
-optuna:                     cicd, optimizer
-websockets:                 http, devel, cicd, ws, daemon
-wsproto:                    http, devel, cicd, ws, daemon
-pydantic:                   http, devel, cicd, daemon
-python-multipart:           http, devel, cicd, daemon
-aiofiles:                   devel, cicd, http, daemon
-pytest-custom_exit_code:    cicd, test
-bs4:                        test
-aiostream:                  devel, cicd
-click:                      cicd
+requests-mock:              test
+pytest-custom_exit_code:    test
+black==24.3.0:              test
+kubernetes>=18.20.0,<31.0.0: test
+pytest-kind==22.11.1:       test
+pytest-lazy-fixture:        test
+torch:                      cicd
+psutil:                     test
+strawberry-graphql>=0.96.0: cicd,devel
+sgqlc:                      cicd,devel
+bs4:                        cicd
 jsonschema:                 cicd
+portforward>=0.2.4,<0.4.3:         cicd
+tensorflow>=2.0:            cicd
+opentelemetry-test-utils>=0.33b0:  test
+prometheus-api-client>=0.5.1:  test
+watchfiles>=0.18.0:         devel
+urllib3>=1.25.9,<2.0.0:     core

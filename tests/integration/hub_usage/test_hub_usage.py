@@ -3,163 +3,124 @@ from pathlib import Path
 
 import pytest
 
-from jina import __version__ as jina_version
-from jina.docker import hubapi
-from jina.docker.hubio import HubIO
-from jina.excepts import RuntimeFailToStart, HubBuilderError, ImageAlreadyExists
-from jina.executors import BaseExecutor
-from jina.flow import Flow
-from jina.helper import expand_dict
-from jina.jaml import JAML
-from jina.parsers import set_pod_parser
-from jina.parsers.hub import set_hub_build_parser, set_hub_list_parser
-from jina.peapods import Pod
+from jina import Flow
+from jina.excepts import RuntimeFailToStart
+from jina.orchestrate.deployments import Deployment
+from jina.parsers import set_deployment_parser
+from jina.serve.executors import BaseExecutor
 
 cur_dir = os.path.dirname(os.path.abspath(__file__))
 
-
+@pytest.mark.skip('jinahub not available')
 def test_simple_use_abs_import_shall_fail():
     with pytest.raises(ModuleNotFoundError):
         from .dummyhub_abs import DummyHubExecutorAbs
+
         DummyHubExecutorAbs()
 
     with pytest.raises(RuntimeFailToStart):
         with Flow().add(uses='DummyHubExecutorAbs'):
             pass
 
-
+@pytest.mark.skip('jinahub not available')
 def test_simple_use_relative_import():
     from .dummyhub import DummyHubExecutor
+
     DummyHubExecutor()
 
     with Flow().add(uses='DummyHubExecutor'):
         pass
 
-
+@pytest.mark.skip('jinahub not available')
 def test_use_from_local_dir_exe_level():
     with BaseExecutor.load_config('dummyhub/config.yml'):
         pass
 
-
-def test_use_from_local_dir_pod_level():
-    a = set_pod_parser().parse_args(['--uses', 'dummyhub/config.yml'])
-    with Pod(a):
+@pytest.mark.skip('jinahub not available')
+def test_use_from_local_dir_deployment_level():
+    a = set_deployment_parser().parse_args(['--uses', 'dummyhub/config.yml'])
+    with Deployment(a):
         pass
 
-
+@pytest.mark.skip('jinahub not available')
 def test_use_from_local_dir_flow_level():
     with Flow().add(uses='dummyhub/config.yml'):
         pass
 
 
-def test_use_from_local_dir_flow_container_level():
-    args = set_hub_build_parser().parse_args(
-        [os.path.join(cur_dir, 'dummyhub'), '--test-uses', '--raise-error'])
-    HubIO(args).build()
-    with Flow().add(uses=f'docker://jinahub/pod.crafter.dummyhubexecutor:0.0.0-{jina_version}'):
+@pytest.fixture
+def local_hub_executor(tmpdir):
+    from hubble.executor import HubExecutor, helper, hubapi
+
+    pkg_path = Path(__file__).parent / 'dummyhub'
+    stream_data = helper.archive_package(pkg_path)
+    with open(tmpdir / 'dummy_test.zip', 'wb') as temp_zip_file:
+        temp_zip_file.write(stream_data.getvalue())
+
+    hubapi.install_local(
+        Path(tmpdir) / 'dummy_test.zip', HubExecutor(uuid='hello', tag='v0')
+    )
+
+@pytest.mark.skip('jinahub not available')
+@pytest.mark.parametrize('uses', ['jinahub://hello', 'jinaai://jina-ai/hello'])
+def test_use_from_local_hub_deployment_level(
+    mocker, monkeypatch, local_hub_executor, uses
+):
+    from hubble.executor.hubio import HubExecutor, HubIO
+
+    mock = mocker.Mock()
+
+    def _mock_fetch(
+        name,
+        *args,
+        **kwargs,
+    ):
+        mock(name=name)
+        return (
+            HubExecutor(
+                uuid='hello',
+                name='alias_dummy',
+                tag='v0',
+                image_name='jinahub/pod.dummy_mwu_encoder',
+                md5sum=None,
+                visibility=True,
+                archive_url=None,
+            ),
+            False,
+        )
+
+    monkeypatch.setattr(HubIO, 'fetch_meta', _mock_fetch)
+    a = set_deployment_parser().parse_args(['--uses', uses])
+    with Deployment(a):
         pass
 
+@pytest.mark.skip('jinahub not available')
+@pytest.mark.parametrize('uses', ['jinahub://hello', 'jinaai://jina-ai/hello'])
+def test_use_from_local_hub_flow_level(mocker, monkeypatch, local_hub_executor, uses):
+    from hubble.executor.hubio import HubExecutor, HubIO
 
-def test_use_executor_pretrained_model_except():
-    args = set_hub_build_parser().parse_args(
-        [os.path.join(cur_dir, 'dummyhub_pretrained'), '--test-uses', '--raise-error'])
+    mock = mocker.Mock()
 
-    with pytest.raises(HubBuilderError):
-        HubIO(args).build()
+    def _mock_fetch(
+        name,
+        *args,
+        **kwargs,
+    ):
+        mock(name=name)
+        return (
+            HubExecutor(
+                uuid='hello',
+                name='alias_dummy',
+                tag='v0',
+                image_name='jinahub/pod.dummy_mwu_encoder',
+                md5sum=None,
+                visibility=True,
+                archive_url=None,
+            ),
+            False,
+        )
 
+    monkeypatch.setattr(HubIO, 'fetch_meta', _mock_fetch)
 
-def test_build_timeout_ready():
-    args = set_hub_build_parser().parse_args(
-        [os.path.join(cur_dir, 'dummyhub_slow'), '--timeout-ready', '20000', '--test-uses', '--raise-error'])
-    HubIO(args).build()
-    with Flow().add(uses=f'docker://jinahub/pod.crafter.dummyhubexecutorslow:0.0.0-{jina_version}',
-                    timeout_ready=20000):
+    with Flow().add(uses=uses, install_requirements=True):
         pass
-
-@pytest.mark.skip('https://github.com/jina-ai/jina/issues/1641')
-@pytest.mark.skipif(condition='GITHUB_TOKEN' not in os.environ, reason='Token not found')
-def test_hub_build_push(monkeypatch, mocker):
-    monkeypatch.setattr(Path, 'is_file', True)
-    mock_access_token = mocker.patch.object(hubapi, '_fetch_access_token', autospec=True)
-    mock_access_token.return_value = os.environ.get('GITHUB_TOKEN', None)
-    args = set_hub_build_parser().parse_args([
-        os.path.join(cur_dir, 'hub-mwu'),
-        '--push',
-        '--host-info'])
-    summary = HubIO(args).build()
-
-    with open(cur_dir + '/hub-mwu' + '/manifest.yml') as fp:
-        manifest_jaml = JAML.load(fp, substitute=True)
-        manifest = expand_dict(manifest_jaml)
-
-    assert summary['is_build_success']
-    assert manifest['version'] == summary['version']
-    assert manifest['description'] == summary['manifest_info']['description']
-    assert manifest['author'] == summary['manifest_info']['author']
-    assert manifest['kind'] == summary['manifest_info']['kind']
-    assert manifest['type'] == summary['manifest_info']['type']
-    assert manifest['vendor'] == summary['manifest_info']['vendor']
-    assert manifest['keywords'] == summary['manifest_info']['keywords']
-
-    args = set_hub_list_parser().parse_args([
-        '--name', summary['manifest_info']['name'],
-        '--keywords', summary['manifest_info']['keywords'][0],
-        '--type', summary['manifest_info']['type']
-    ])
-    response = HubIO(args).list()
-    manifests = response
-
-    assert len(manifests) >= 1
-    assert manifests[0]['name'] == summary['manifest_info']['name']
-
-
-@pytest.mark.skip('https://github.com/jina-ai/jina/issues/1641')
-@pytest.mark.skipif(condition='GITHUB_TOKEN' not in os.environ, reason='Token not found')
-def test_hub_build_push_push_again(monkeypatch, mocker):
-    monkeypatch.setattr(Path, 'is_file', True)
-    mock_access_token = mocker.patch.object(hubapi, '_fetch_access_token', autospec=True)
-    mock_access_token.return_value = os.environ.get('GITHUB_TOKEN', None)
-
-    args = set_hub_build_parser().parse_args([str(cur_dir) + '/hub-mwu', '--push', '--host-info'])
-    summary = HubIO(args).build()
-
-    with open(str(cur_dir) + '/hub-mwu' + '/manifest.yml') as fp:
-        manifest_jaml = JAML.load(fp, substitute=True)
-        manifest = expand_dict(manifest_jaml)
-
-    assert summary['is_build_success']
-    assert manifest['version'] == summary['version']
-    assert manifest['description'] == summary['manifest_info']['description']
-    assert manifest['author'] == summary['manifest_info']['author']
-    assert manifest['kind'] == summary['manifest_info']['kind']
-    assert manifest['type'] == summary['manifest_info']['type']
-    assert manifest['vendor'] == summary['manifest_info']['vendor']
-    assert manifest['keywords'] == summary['manifest_info']['keywords']
-
-    args = set_hub_list_parser().parse_args([
-        '--name', summary['manifest_info']['name'],
-        '--keywords', summary['manifest_info']['keywords'][0],
-        '--type', summary['manifest_info']['type']
-    ])
-    response = HubIO(args).list()
-    manifests = response
-
-    assert len(manifests) >= 1
-    assert manifests[0]['name'] == summary['manifest_info']['name']
-
-    with pytest.raises(ImageAlreadyExists):
-        # try and push same version again should fail with `--no-overwrite`
-        args = set_hub_build_parser().parse_args([str(cur_dir) + '/hub-mwu', '--push', '--host-info', '--no-overwrite'])
-        HubIO(args).build()
-
-
-@pytest.mark.timeout(360)
-@pytest.mark.parametrize('dockerfile_path',
-                         [os.path.join(cur_dir, 'hub-mwu-multistage'),
-                          os.path.relpath(
-                              os.path.join(cur_dir, 'hub-mwu-multistage'),
-                              os.getcwd())])
-def test_hub_build_multistage(dockerfile_path):
-    args = set_hub_build_parser().parse_args([dockerfile_path, '--raise-error'])
-    result = HubIO(args).build()
-    assert result['is_build_success']

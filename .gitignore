@@ -129,7 +129,28 @@ shell/jina-wizard.sh
 /junit/
 /tests/junit/
 /docs/chapters/proto/docs.md
+/tests/.pytest-kind
 
 # IntelliJ IDEA
 *.iml
 .idea
+
+# VSCode
+.vscode
+
+# test with config in resources
+tests/integration/crud/simple/simple_indexer/
+
+# latency tracking
+latency
+MyIndexer/
+MyMemMap/
+original/
+output/
+
+# kubernetes testing
+.pytest-kind
+.kube
+
+# dynamically generated protobuf docs
+docs/proto/docs.md

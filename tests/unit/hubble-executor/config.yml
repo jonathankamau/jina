@@ -1,0 +1,7 @@
+jtype: MyExecutor
+with:
+  bar: 123
+py_modules:
+  - dep.py
+  - exec.py
+

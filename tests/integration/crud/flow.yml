@@ -1,0 +1,10 @@
+jtype: Flow
+with:
+  port: 12345
+  protocol: $RESTFUL
+executors:
+  - name: indexer
+    uses:
+      jtype: CrudIndexer
+      metas:
+        workspace: $WORKSPACE

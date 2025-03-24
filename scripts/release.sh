@@ -32,9 +32,14 @@ function clean_build {
     rm -rf build
 }
 
+function clean_egg {
+    rm -rf *.egg-info
+    rm -rf build
+}
+
 function pub_pypi {
     # publish to pypi
-    clean_build
+    clean_egg
     cp extra-requirements.txt jina/resources/
     python setup.py sdist
     twine upload dist/*
@@ -45,7 +50,7 @@ function git_commit {
     git config --local user.email "dev-bot@jina.ai"
     git config --local user.name "Jina Dev Bot"
     git tag "v$RELEASE_VER" -m "$(cat ./CHANGELOG.tmp)"
-    git add $INIT_FILE ./CHANGELOG.md jina/hub jina/resources/extra-requirements.txt
+    git add $INIT_FILE ./CHANGELOG.md jina/resources/extra-requirements.txt
     git commit -m "chore(version): the next version will be $NEXT_VER" -m "build($RELEASE_ACTOR): $RELEASE_REASON"
 }
 
@@ -62,11 +67,6 @@ function make_release_note {
 
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
-if [[ "$BRANCH" != "master" ]]; then
-  printf "You are not at master branch, exit\n";
-  exit 1;
-fi
-
 LAST_UPDATE=`git show --no-notes --format=format:"%H" $BRANCH | head -n 1`
 LAST_COMMIT=`git show --no-notes --format=format:"%H" origin/$BRANCH | head -n 1`
 
@@ -80,32 +80,45 @@ export RELEASE_VER=$(sed -n '/^__version__/p' $INIT_FILE | cut -d \' -f2)
 LAST_VER=$(git tag -l | sort -V | tail -n1)
 printf "last version: \e[1;32m$LAST_VER\e[0m\n"
 
+# Update new _versions.json if necessary
+python ./scripts/prepend_version_json.py --version "v$RELEASE_VER"
+git add ./docs/_versions.json
+
 if [[ $1 == "final" ]]; then
   printf "this will be a final release: \e[1;33m$RELEASE_VER\e[0m\n"
 
   NEXT_VER=$(echo $RELEASE_VER | awk -F. -v OFS=. 'NF==1{print ++$NF}; NF>1{$NF=sprintf("%0*d", length($NF), ($NF+1)); print}')
   printf "bump master version to: \e[1;32m$NEXT_VER\e[0m\n"
 
-  git submodule update --remote
+  make_release_note
+
+  pub_pypi
+
+  VER_TAG_NEXT=$VER_TAG\'${NEXT_VER}\'
+  update_ver_line "$VER_TAG" "$VER_TAG_NEXT" "$INIT_FILE"
+  RELEASE_REASON="$2"
+  RELEASE_ACTOR="$3"
+  git_commit
+  slack_notif
+elif [[ $1 == 'rc' ]]; then
+  printf "this will be a release candidate: \e[1;33m$RELEASE_VER\e[0m\n"
+  DOT_RELEASE_VER=$(echo $RELEASE_VER | sed "s/rc/\./")
+  NEXT_VER=$(echo $DOT_RELEASE_VER | awk -F. -v OFS=. 'NF==1{print ++$NF}; NF>1{$NF=sprintf("%0*d", length($NF), ($NF+1)); print}')
+  NEXT_VER=$(echo $NEXT_VER | sed "s/\.\([^.]*\)$/rc\1/")
+  printf "bump master version to: \e[1;32m$NEXT_VER\e[0m, this will be the next version\n"
 
   make_release_note
 
   pub_pypi
 
   VER_TAG_NEXT=$VER_TAG\'${NEXT_VER}\'
+  update_ver_line "$VER_TAG" "$VER_TAG_NEXT" "$INIT_FILE"
   RELEASE_REASON="$2"
   RELEASE_ACTOR="$3"
-  update_ver_line "$VER_TAG" "$VER_TAG_NEXT" "$INIT_FILE"
   git_commit
   slack_notif
 else
   # as a prerelease, pypi update only, no back commit etc.
-  COMMITS_SINCE_LAST_VER=$(git rev-list $LAST_VER..HEAD --count)
-  NEXT_VER=$RELEASE_VER".dev"$COMMITS_SINCE_LAST_VER
-  printf "this will be a developmental release: \e[1;33m$NEXT_VER\e[0m\n"
-
-  VER_TAG_NEXT=$VER_TAG\'${NEXT_VER}\'
-  update_ver_line "$VER_TAG" "$VER_TAG_NEXT" "$INIT_FILE"
-
+  # previously the INIT_FILE must have been updated
   pub_pypi
 fi

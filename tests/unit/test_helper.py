@@ -1,20 +1,35 @@
 import os
-import time
 from types import SimpleNamespace
 
 import numpy as np
+import psutil
 import pytest
 
-from cli import _is_latest_version
-from jina import NdArray, Request
+from jina import Executor, Flow
 from jina.clients.helper import _safe_callback, pprint_routes
+from jina.constants import __default_endpoint__
 from jina.excepts import BadClientCallback, NotSupportedError
-from jina.helper import cached_property, convert_tuple_to_list, deprecated_alias, is_yaml_filepath, touch_dir, random_port
+from jina.helper import (
+    cached_property,
+    convert_tuple_to_list,
+    deprecated_alias,
+    dunder_get,
+    find_request_binding,
+    get_ci_vendor,
+    is_generator,
+    is_port_free,
+    is_yaml_filepath,
+    parse_arg,
+    random_port,
+    reset_ports,
+    retry,
+    run_async,
+)
 from jina.jaml.helper import complete_path
-from jina.logging import default_logger
-from jina.logging.profile import TimeContext
+from jina.logging.predefined import default_logger
 from jina.proto import jina_pb2
-from jina.types.querylang.queryset.dunderkey import dunder_get
+from jina.serve.executors.decorators import requests
+from jina.types.request.data import DataRequest
 from tests import random_docs
 
 
@@ -52,35 +67,21 @@ def test_cached_property():
     assert second_uncached_test_property == "99999"
 
 
-def test_time_context():
-    with TimeContext('dummy') as tc:
-        time.sleep(2)
-
-    assert int(tc.duration) == 2
-    assert tc.readable_duration == '2 seconds'
-
-
 def test_dunder_get():
     a = SimpleNamespace()
-    a.b = {'c': 1}
+    a.b = {'c': 1, 'd': {'e': 'f', 'g': [0, 1, {'h': 'i'}]}}
     assert dunder_get(a, 'b__c') == 1
-
-
-def test_check_update():
-    assert _is_latest_version()
-    # now mock it as old version
-    import jina
-    jina.__version__ = '0.1.0'
-    assert not _is_latest_version()
+    assert dunder_get(a, 'b__d__e') == 'f'
+    assert dunder_get(a, 'b__d__g__0') == 0
+    assert dunder_get(a, 'b__d__g__2__h') == 'i'
 
 
 def test_wrap_func():
-    from jina.executors import BaseExecutor
-    from jina.executors.encoders import BaseEncoder
+    from jina import Executor
 
-    class DummyEncoder(BaseEncoder):
-        def train(self):
-            pass
+    class DummyEncoder(Executor):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
 
     class MockEnc(DummyEncoder):
         pass
@@ -89,23 +90,21 @@ def test_wrap_func():
         pass
 
     class MockMockMockEnc(MockEnc):
-        def train(self):
-            pass
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
 
     def check_override(cls, method):
-        is_inherit = any(getattr(cls, method) == getattr(i, method, None) for i in cls.mro()[1:])
+        is_inherit = any(
+            getattr(cls, method) == getattr(i, method, None) for i in cls.mro()[1:]
+        )
         is_parent_method = any(hasattr(i, method) for i in cls.mro()[1:])
         is_override = not is_inherit and is_parent_method
         return is_override
 
-    # newly created
-    assert not check_override(BaseExecutor, 'train')
-
-    assert not check_override(BaseEncoder, 'train')
-    assert check_override(DummyEncoder, 'train')
-    assert not check_override(MockEnc, 'train')
-    assert not check_override(MockMockEnc, 'train')
-    assert check_override(MockMockMockEnc, 'train')
+    assert check_override(DummyEncoder, '__init__')
+    assert not check_override(MockEnc, '__init__')
+    assert not check_override(MockMockEnc, '__init__')
+    assert check_override(MockMockMockEnc, '__init__')
 
 
 def test_pprint_routes(capfd):
@@ -115,25 +114,19 @@ def test_pprint_routes(capfd):
     r.status.exception.stacks.extend(['r1\nline1', 'r2\nline2'])
     result.append(r)
     r = jina_pb2.RouteProto()
-    r.status.code = jina_pb2.StatusProto.ERROR_CHAINED
-    r.status.exception.stacks.extend(['line1', 'line2'])
-    result.append(r)
-    r = jina_pb2.RouteProto()
     r.status.code = jina_pb2.StatusProto.SUCCESS
     result.append(r)
-    rr = Request()
+    rr = DataRequest()
     rr.routes.extend(result)
     pprint_routes(rr)
     out, err = capfd.readouterr()
-    assert '⚪' in out
     assert '🟢' in out
-    assert 'Pod' in out
+    assert 'Executor' in out
     assert 'Time' in out
     assert 'Exception' in out
     assert 'r1' in out
     assert 'line1r2' in out
     assert 'line2' in out
-    assert 'line1line2' in out
 
 
 def test_convert_tuple_to_list():
@@ -163,12 +156,12 @@ def test_random_docs():
     doc_ids = []
     chunk_ids = []
     for d2, d1 in zip(docs2, docs1):
-        np.testing.assert_almost_equal(d2.embedding, NdArray(d1.embedding).value)
+        np.testing.assert_almost_equal(d2.embedding, d1.embedding)
         doc_ids.append((d1.id))
         assert d2.text == d1.text
         assert d2.tags['id'] == d1.tags['id']
         for c2, c1 in zip(d2.chunks, d1.chunks):
-            np.testing.assert_almost_equal(c2.embedding, NdArray(c1.embedding).value)
+            np.testing.assert_almost_equal(c2.embedding, c1.embedding)
             chunk_ids.append((c1.id))
             assert c2.text == c1.text
             assert c2.tags['id'] == c1.tags['id']
@@ -206,48 +199,230 @@ def test_deprecated_decor():
         dummy(bar=1, foofoo=2)
 
 
-@pytest.mark.parametrize('val', ['merge_and_topk.yml',
-                                 'merge_and_topk.yaml',
-                                 'da.yaml',
-                                 'd.yml',
-                                 '/da/da.yml',
-                                 'das/das.yaml',
-                                 '1234.yml',
-                                 '1234.yml ',
-                                 ' 1234.yml '])
+@pytest.mark.parametrize(
+    'val',
+    [
+        'merge_and_topk.yml',
+        'merge_and_topk.yaml',
+        'da.yaml',
+        'd.yml',
+        '/da/da.yml',
+        'das/das.yaml',
+        '1234.yml',
+        '1234.yml ',
+        ' 1234.yml ',
+    ],
+)
 def test_yaml_filepath_validate_good(val):
     assert is_yaml_filepath(val)
 
 
-@pytest.mark.parametrize('val', [' .yml',
-                                 'a',
-                                 ' uses: yaml',
-                                 'ayaml',
-                                 '''
+@pytest.mark.parametrize(
+    'val',
+    [
+        ' .yml',
+        'a',
+        ' uses: yaml',
+        'ayaml',
+        '''
     shards: $JINA_SHARDS_INDEXERS
     host: $JINA_REDIS_INDEXER_HOST
-    port_expose: 8000
     polling: all
     timeout_ready: 100000 # larger timeout as in query time will read all the data
     uses_after: merge_and_topk.yml
-                                 '''])
+                                 ''',
+    ],
+)
 def test_yaml_filepath_validate_bad(val):
     assert not is_yaml_filepath(val)
 
 
-def test_touch_dir(tmpdir):
-    touch_dir(tmpdir)
-    assert os.path.exists(tmpdir)
-
-
 @pytest.fixture
 def config():
-    os.environ['JINA_RANDOM_PORTS'] = "True"
+    os.environ['JINA_RANDOM_PORT_MIN'] = '49153'
     yield
-    del os.environ['JINA_RANDOM_PORTS']
+    del os.environ['JINA_RANDOM_PORT_MIN']
 
 
 def test_random_port(config):
-    assert os.environ['JINA_RANDOM_PORTS']
+    reset_ports()
+    assert os.environ['JINA_RANDOM_PORT_MIN']
     port = random_port()
     assert 49153 <= port <= 65535
+
+
+def test_random_port_unique(config):
+    reset_ports()
+    assert os.environ['JINA_RANDOM_PORT_MIN']
+    generated_ports = set()
+    for i in range(1000):
+        port = random_port()
+        assert port not in generated_ports
+        assert int(os.environ['JINA_RANDOM_PORT_MIN']) <= port <= 65535
+        generated_ports.add(port)
+
+
+@pytest.fixture
+def config_few_ports():
+    os.environ['JINA_RANDOM_PORT_MIN'] = "49300"
+    os.environ['JINA_RANDOM_PORT_MAX'] = "49301"
+    yield
+    del os.environ['JINA_RANDOM_PORT_MIN']
+    del os.environ['JINA_RANDOM_PORT_MAX']
+
+
+class MyDummyExecutor(Executor):
+    @requests
+    def foo(self, **kwargs):
+        pass
+
+    @requests(on='index')
+    def bar(self, **kwargs):
+        pass
+
+    @requests(on='search')
+    def bar2(self, **kwargs):
+        pass
+
+    def foo2(self):
+        pass
+
+
+def test_find_request_binding():
+    r = find_request_binding(MyDummyExecutor)
+    assert r[__default_endpoint__] == 'foo'
+    assert r['index'] == 'bar'
+    assert r['search'] == 'bar2'
+    assert 'foo2' not in r.values()
+
+
+@pytest.mark.skipif(
+    'GITHUB_WORKFLOW' not in os.environ, reason='this test is only validate on CI'
+)
+def test_ci_vendor():
+    assert get_ci_vendor() == 'GITHUB_ACTIONS'
+
+
+def test_retry():
+    class TryMe:
+        def __init__(self, fail_count: int) -> None:
+            self.tried_count = 0
+            self._fail_count = fail_count
+
+        @retry(num_retry=4)  # retry 4 times
+        def try_it(self):
+            self.tried_count += 1
+            if self.tried_count <= self._fail_count:
+                raise Exception('try again')
+
+            return 'it works'
+
+    try_me = TryMe(fail_count=4)
+    with pytest.raises(Exception) as exc_info:
+        # failing 4 times, so it should raise an error
+        try_me.try_it()
+
+    assert exc_info.match('try again')
+    assert try_me.tried_count == 4
+
+    try_me = TryMe(fail_count=2)
+
+    # failing 2 times, it must succeed on 3rd time
+    result = try_me.try_it()
+
+    assert result == 'it works'
+    assert try_me.tried_count == 3
+
+
+def test_port_occupied(port_generator):
+    port = port_generator()
+    with Flow(port=port):
+        is_occupied = not (is_port_free('localhost', port))
+        assert is_occupied
+
+
+def test_port_free(port_generator):
+    port = port_generator()
+    is_free = is_port_free('localhost', port)
+    assert is_free
+
+
+def test_run_async():
+    async def dummy():
+        pass
+
+    p = psutil.Process()
+
+    run_async(dummy)
+    first_fd_count = p.num_fds()
+
+    for i in range(10):
+        run_async(dummy)
+
+    end_fd_count = p.num_fds()
+    assert first_fd_count == end_fd_count
+
+
+@pytest.mark.parametrize(
+    'input, expected',
+    [
+        ('12', 12),
+        ('1.5', 1.5),
+        ('str', 'str'),
+        ('[]', []),
+        ('[1, 1.5, 5]', [1, 1.5, 5]),
+        ('true', True),
+        ('False', False),
+    ],
+)
+def test_parse_arg(input, expected):
+    assert parse_arg(input) == expected
+
+
+def yield_generator_func():
+    for _ in range(10):
+        # no yield
+        pass
+    yield 1
+    yield 2
+
+
+async def async_yield_generator_func():
+    import asyncio
+
+    for _ in range(10):
+        # no yield
+        pass
+    await asyncio.sleep(0.5)
+    yield 1
+    yield 2
+
+
+def normal_func():
+    for _ in range(10):
+        # no yield
+        pass
+
+
+async def async_normal_func():
+    import asyncio
+
+    await asyncio.sleep(0.5)
+    for _ in range(10):
+        # no yield
+        pass
+
+
+def yield_from_generator_func():
+    for _ in range(10):
+        # no yield
+        pass
+    yield from yield_generator_func()
+
+
+def test_is_generator():
+    assert is_generator(yield_generator_func)
+    assert not is_generator(normal_func)
+    assert not is_generator(async_normal_func)
+    assert is_generator(yield_from_generator_func)
+    assert is_generator(async_yield_generator_func)

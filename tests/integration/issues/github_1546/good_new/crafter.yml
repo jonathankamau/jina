@@ -1,0 +1,3 @@
+!GoodCrafterNew
+py_modules:
+  - executor/__init__.py

@@ -1,6 +1,0 @@
-!Flow
-version: '1.0'
-pods:
-  - name: pod1
-    uses: _pass
-    read_only: true

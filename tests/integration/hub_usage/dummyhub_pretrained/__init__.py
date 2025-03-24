@@ -1,15 +1,15 @@
 from typing import Dict
 
-from jina.excepts import ModelCheckpointNotExist
-from jina.executors.crafters import BaseCrafter
+from jina import Executor
 
 
-class DummyPretrainedExecutor(BaseCrafter):
+class ModelCheckpointNotExist(FileNotFoundError):
+    """Exception to raise for executors depending on pretrained model files when they do not exist."""
 
+
+class DummyPretrainedExecutor(Executor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-    def post_init(self):
         raise ModelCheckpointNotExist
 
     def craft(self, *args, **kwargs) -> Dict:

@@ -7,10 +7,11 @@ area/testing:
   - tests/**/*
 
 area/setup:
-  - ./setup.py
+  - setup.py
   - extra-requirements.txt
   - requirements.txt
   - MANIFEST.in
+  - fastentrypoints.py
 
 area/core:
   - jina/**/*
@@ -21,8 +22,6 @@ area/helper:
 area/entrypoint:
   - jina/__init__.py
 
-area/helloworld:
-  - jina/helloworld/*
 
 area/network:
   - jina/peapods/**/*
@@ -40,10 +39,10 @@ area/docker:
   - ./.dockerignore
 
 area/cli:
-  - cli/**/*
+  - jina_cli/**/*
 
-area/daemon:
-  - daemon/**/*
+area/docarray:
+  - docarray/**/*
 
 area/script:
   - script/**/*
@@ -92,6 +91,9 @@ component/proto:
 
 component/type:
   - jina/types/**/*
+
+component/math:
+  - jina/math/**/*
 
 component/resource:
   - jina/resources/**/*

@@ -1,40 +1,42 @@
-from cli.export import api_to_dict
+from jina.schemas.gateway import schema_gateway
 from jina.schemas.helper import _cli_to_schema
+from jina_cli.export import api_to_dict
 
 _schema_flow_with = _cli_to_schema(
     api_to_dict(),
-    'flow',
+    ['flow', 'gateway'],
     allow_addition=False,
-    description='The config of Flow, unrecognized config arguments will be applied to all Pods')['Jina::Flow']
+    description='The config of Flow, unrecognized config arguments will be applied to all Deployments',
+)['Jina::Flow']
 
 schema_flow = {
     'Jina::Flow': {
         'properties': {
             'with': _schema_flow_with,
             'jtype': {
-                'description': 'The type of Jina object (Flow, Executor, Driver).\n'
-                               'A Flow is made up of several sub-tasks, and it manages the states and context of these sub-tasks.\n'
-                               'The input and output data of Flows are Documents.',
+                'description': 'The type of Jina object (Flow, Executor).\n'
+                'A Flow is made up of several sub-tasks, and it manages the states and context of these sub-tasks.\n'
+                'The input and output data of Flows are Documents.',
                 'type': 'string',
                 'default': 'Flow',
-                'enum': ['Flow', 'AsyncFlow']
+                'enum': ['Flow'],
             },
             'version': {
                 'description': 'The YAML version of this Flow.',
                 'type': 'string',
                 'default': '\'1\'',
             },
-            'pods': {
+            'executors': {
                 'description': 'Define the steps in the Flow.\n'
-                               'A Pod is a container and interface for one or multiple Peas that have the same properties.',
+                'A Deployment is a container and interface for one or multiple Pods that have the same properties.',
                 'type': 'array',
-                'items': {
-                    '$ref': '#/definitions/Jina::Pod'
-                },
-                'minItems': 1
-            }
+                'items': {'$ref': '#/definitions/Jina::Deployment'},
+                'minItems': 1,
+            },
+            'gateway': schema_gateway['Jina::Gateway'],
         },
         'type': 'object',
         'additionalProperties': False,
-        'required': ['jtype', 'version', 'pods'],
-    }}
+        'required': ['jtype', 'executors'],
+    }
+}
